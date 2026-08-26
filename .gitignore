@@ -1,0 +1,79 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+ENV/
+env/
+
+# Secrets & Credentials
+.env
+sa-key.json
+*.key
+*.pem
+*.crt
+
+# Cache & Data
+parser_cache/
+chroma_data/
+*.db
+*.sqlite3
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+.dockerignore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# Docker local volumes (if you ever mount without a named volume)
+docker-compose.override.yml
+
+# ===== Legal RAG - Confidential Data (keep locally, never commit) =====
+# Raw evaluation / golden datasets with contract excerpts
+golden.jsonl
+golden_with_chunks.jsonl
+golden_with_chunks_bge.jsonl
+eval_cache.json
+generation_eval_results_prod.json
+results_*.json
+toc_output.json
+doc_id_to_site.json
+site_mapping_llm.json
+problematic.txt
+
+# Any .json/.jsonl at repo root that may contain contract data
+*.jsonl
+# Keep deploy configs but ignore root-level data jsons explicitly above
+!deploy/*.yaml
+!deploy/*.yml
+
+# Optional: ignore local data dumps
+data/
+*.pdf

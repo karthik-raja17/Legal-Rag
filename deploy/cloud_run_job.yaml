@@ -1,0 +1,38 @@
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: legal-rag-ingestion
+  labels:
+    app: legal-rag
+    component: ingestion
+spec:
+  template:
+    spec:
+      taskCount: 1
+      parallelism: 1
+      template:
+        spec:
+          containers:
+          - image: europe-west9-docker.pkg.dev/your-gcp-project-id/legal-rag-repo/parser:latest
+            name: ingestor
+            command:
+            - python
+            - -m
+            - src.orchestrator.ingestor
+            args:
+            - --excel-file-id
+            - "your-excel-file-id"
+            - --concurrency
+            - "5"
+            env:
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /app/sa-key.json
+            - name: PARSER_URL
+              value: "https://your-parser-service-url"
+            resources:
+              limits:
+                cpu: 1000m
+                memory: 2Gi
+          serviceAccountName: legal-rag-sa@your-gcp-project-id.iam.gserviceaccount.com
+          timeoutSeconds: 600
+          maxRetries: 2

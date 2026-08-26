@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  dedoc:
+    image: dedocproject/dedoc:latest
+    container_name: dedoc
+    ports:
+      - "1231:1231"
+    restart: unless-stopped
+    command: python3 -m dedoc --host 0.0.0.0 --port 1231
+
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: chromadb
+    ports:
+      - "8000:8000"
+    environment:
+      - IS_PERSISTENT=TRUE
+      - PERSIST_DIRECTORY=/chroma/chroma
+    volumes:
+      - chroma_data:/chroma/chroma
+
+  app:
+    build: .
+    container_name: legal-rag-app
+    ports:
+      - "8080:8080"
+    environment:
+      - DEDOC_SERVICE_URL=http://dedoc:1231
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT=8000
+    env_file:
+      - .env
+    volumes:
+      - ./sa-key.json:/app/sa-key.json
+      - ./parser_cache:/app/parser_cache
+    depends_on:
+      - dedoc
+      - chromadb
+
+volumes:
+  chroma_data:

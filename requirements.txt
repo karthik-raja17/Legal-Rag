@@ -1,0 +1,54 @@
+# Core
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.6.0
+python-dotenv==1.0.1
+
+# GCP
+google-cloud-aiplatform==1.72.0
+google-cloud-storage==2.18.2
+google-cloud-firestore==2.20.0
+google-api-python-client==2.154.0
+google-auth==2.35.0
+google-cloud-pubsub==2.23.1
+google-cloud-discoveryengine>=0.13.0
+
+# Data & Processing
+pandas==2.2.3
+openpyxl==3.1.5
+PyMuPDF==1.24.11
+langchain-text-splitters==0.3.4
+chromadb==0.5.23
+tiktoken==0.8.0
+pytesseract>=0.3.10
+pdf2image>=1.10.0
+Pillow>=10.0.0
+
+# Resilience
+tenacity==8.5.0
+
+# Utilities
+requests==2.32.3
+
+# Table Extraction
+camelot-py[cv]>=0.11.0
+pdfplumber>=0.10.0
+
+# NLP (French)
+spacy>=3.7.0
+fr-core-news-sm>=3.7.0
+# lexnlp removed – use spaCy + Vertex AI instead
+
+# OCR (Google Document AI)
+google-cloud-documentai>=2.0.0
+
+filelock==3.13.0
+python-multipart>=0.0.9
+
+google-auth>=2.35.0
+
+aiohttp>=3.9.0
+aiofiles>=23.2.0
+
+rank_bm25>=0.2.2

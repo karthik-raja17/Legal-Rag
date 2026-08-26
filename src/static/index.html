@@ -1,0 +1,2096 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Legal RAG – Assistant & Parser</title>
+
+    <script>
+        window.APP_CONFIG = {
+            API_BASE: window.location.origin + '/api',
+            MAX_RETRIES: 3,
+            RETRY_DELAY: 1000,
+            TIMEOUT: 600000,
+            MAX_MESSAGE_LENGTH: 4000,
+            PERSIST_MESSAGES: true,
+            STORAGE_KEY: 'legal_rag_chat_history',
+        };
+    </script>
+
+    <style>
+        /* ─── Design Tokens ─────────────────────────────── */
+        :root {
+            --primary: #1e3a5f;
+            --primary-light: #2563eb;
+            --primary-dark: #152a45;
+            --accent: #3b82f6;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+            --bg: #f1f5f9;
+            --surface: #ffffff;
+            --surface-hover: #f8fafc;
+            --surface-raised: #f1f5f9;
+            --border: #e2e8f0;
+            --border-light: #f1f5f9;
+            --text: #0f172a;
+            --text-secondary: #475569;
+            --text-muted: #94a3b8;
+            --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.04);
+            --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.06);
+            --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.06), 0 2px 4px -2px rgb(0 0 0 / 0.06);
+            --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.08), 0 4px 6px -4px rgb(0 0 0 / 0.06);
+            --radius-sm: 0.375rem;
+            --radius: 0.5rem;
+            --radius-lg: 0.75rem;
+            --radius-xl: 1rem;
+            --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            --sidebar-bg: var(--surface);
+            --sidebar-width: 280px;
+        }
+
+        /* Dark theme variables */
+        [data-theme="dark"] {
+            --primary: #3b82f6;
+            --primary-light: #60a5fa;
+            --primary-dark: #1e3a5f;
+            --accent: #3b82f6;
+            --success: #34d399;
+            --warning: #fbbf24;
+            --error: #f87171;
+            --bg: #0f172a;
+            --surface: #1e293b;
+            --surface-hover: #273449;
+            --surface-raised: #1e293b;
+            --border: #334155;
+            --border-light: #273449;
+            --text: #f1f5f9;
+            --text-secondary: #cbd5e1;
+            --text-muted: #94a3b8;
+            --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.2);
+            --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.3), 0 1px 2px -1px rgb(0 0 0 / 0.3);
+            --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.3), 0 2px 4px -2px rgb(0 0 0 / 0.3);
+            --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.4), 0 4px 6px -4px rgb(0 0 0 / 0.4);
+        }
+
+        /* ─── Base & Reset ───────────────────────────────── */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: var(--font-sans);
+            background: var(--bg);
+            color: var(--text);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            transition: background 0.3s ease, color 0.3s ease;
+        }
+
+        #app {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 1.25rem;
+            width: 100%;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* ─── Header ─────────────────────────────────────── */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 0.25rem 1rem 0.25rem;
+            border-bottom: 1px solid var(--border);
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            flex-shrink: 0;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 0.875rem;
+        }
+
+        .brand-icon {
+            width: 2.5rem;
+            height: 2.5rem;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
+            border-radius: var(--radius-lg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+            color: white;
+            box-shadow: var(--shadow-sm);
+            flex-shrink: 0;
+        }
+
+        .brand-text h1 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--primary);
+            letter-spacing: -0.025em;
+            line-height: 1.25;
+        }
+
+        .brand-text span {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .badge {
+            background: var(--surface-raised);
+            border: 1px solid var(--border);
+            padding: 0.375rem 0.875rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            letter-spacing: 0.02em;
+        }
+
+        .dark-toggle {
+            background: none;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 0.5rem 0.75rem;
+            cursor: pointer;
+            font-size: 1.25rem;
+            color: var(--text-secondary);
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .dark-toggle:hover {
+            background: var(--surface-hover);
+            color: var(--text);
+        }
+
+        /* ─── Tab Navigation ─────────────────────────────── */
+        .tabs {
+            display: flex;
+            gap: 0.25rem;
+            margin: 1rem 0 0.75rem 0;
+            padding: 0.25rem;
+            background: var(--surface-raised);
+            border-radius: var(--radius-lg);
+            border: 1px solid var(--border);
+            flex-shrink: 0;
+            align-self: flex-start;
+        }
+
+        .tab-btn {
+            padding: 0.5rem 1.25rem;
+            border: none;
+            background: transparent;
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            cursor: pointer;
+            border-radius: var(--radius);
+            transition: all 0.2s ease;
+            position: relative;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .tab-btn:hover {
+            color: var(--text);
+            background: rgba(255,255,255,0.1);
+        }
+
+        .tab-btn.active {
+            background: var(--surface);
+            color: var(--primary);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .tab-content {
+            flex: 1;
+            display: none;
+            flex-direction: column;
+            overflow: hidden;
+            min-height: 0;
+            gap: 0.75rem;
+        }
+
+        .tab-content.active { display: flex; }
+
+        /* ─── Chat Layout (Sidebar + Main) ───────────────── */
+        #tab-chat.active {
+            flex-direction: row;
+            gap: 1rem;
+        }
+
+        .chat-sidebar {
+            width: var(--sidebar-width);
+            flex-shrink: 0;
+            background: var(--sidebar-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-xl);
+            padding: 1rem;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .chat-main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            min-width: 0;
+            overflow: hidden;
+        }
+
+        /* ─── Chat Panel ─────────────────────────────────── */
+        #chat-area {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0.5rem 0.25rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+            scrollbar-width: thin;
+            scrollbar-color: var(--border) transparent;
+        }
+
+        #chat-area::-webkit-scrollbar { width: 5px; }
+        #chat-area::-webkit-scrollbar-track { background: transparent; }
+        #chat-area::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; }
+        #chat-area::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+        .message {
+            max-width: 82%;
+            padding: 0;
+            border-radius: var(--radius-xl);
+            line-height: 1.6;
+            word-wrap: break-word;
+            animation: messageSlide 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+            position: relative;
+        }
+
+        @keyframes messageSlide {
+            0% { opacity: 0; transform: translateY(8px) scale(0.97); }
+            100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        .message.user {
+            align-self: flex-end;
+            background: linear-gradient(135deg, var(--primary) 0%, #1e40af 100%);
+            color: white;
+            border-bottom-right-radius: var(--radius-sm);
+            box-shadow: var(--shadow);
+        }
+
+        .message.user > div:first-child { padding: 0.875rem 1.25rem; }
+
+        .message.assistant {
+            align-self: flex-start;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-bottom-left-radius: var(--radius-sm);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .message.assistant > div:first-child { padding: 0.875rem 1.25rem; }
+
+        .message .answer { font-size: 0.95rem; }
+
+        .message .chunks {
+            margin-top: 0.75rem;
+            border-top: 1px solid var(--border-light);
+            padding-top: 0.75rem;
+        }
+
+        .message .chunks summary {
+            cursor: pointer;
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            padding: 0.25rem 0;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            user-select: none;
+        }
+
+        .message .chunks summary::before {
+            content: '▸';
+            font-size: 0.7rem;
+            transition: transform 0.2s;
+        }
+
+        .message .chunks details[open] summary::before { transform: rotate(90deg); }
+
+        .message .chunks ul {
+            list-style: none;
+            padding: 0;
+            margin: 0.5rem 0 0;
+        }
+
+        .message .chunks li {
+            background: var(--surface-raised);
+            margin-bottom: 0.625rem;
+            padding: 0.875rem 1rem;
+            border-radius: var(--radius-lg);
+            border-left: 3px solid var(--primary-light);
+            font-size: 0.875rem;
+            transition: background 0.15s;
+        }
+
+        .message .chunks li:hover { background: var(--surface-hover); }
+        .message .chunks li:last-child { margin-bottom: 0; }
+
+        .message .chunks .meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 0.5rem;
+            padding-top: 0.5rem;
+            border-top: 1px solid var(--border-light);
+        }
+
+        .message .chunks .meta span {
+            background: var(--surface);
+            padding: 0.15rem 0.5rem;
+            border-radius: 9999px;
+            border: 1px solid var(--border);
+            font-weight: 500;
+        }
+
+        .message.error {
+            align-self: center;
+            background: #fef2f2;
+            color: #991b1b;
+            border: 1px solid #fecaca;
+            max-width: 90%;
+            text-align: center;
+            padding: 1rem 1.5rem;
+            border-radius: var(--radius-lg);
+            font-size: 0.9rem;
+        }
+
+        .message .retry-btn {
+            background: var(--error);
+            color: #fff;
+            border: none;
+            border-radius: var(--radius-sm);
+            padding: 0.35rem 0.875rem;
+            font-size: 0.8rem;
+            font-weight: 600;
+            cursor: pointer;
+            margin-left: 0.75rem;
+            transition: opacity 0.15s;
+        }
+
+        .message .retry-btn:hover { opacity: 0.9; }
+
+        .message.loading {
+            align-self: flex-start;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-xl);
+            border-bottom-left-radius: var(--radius-sm);
+            padding: 1rem 1.25rem;
+            color: var(--text-muted);
+            font-style: normal;
+            font-size: 0.9rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .message.loading::before {
+            content: '';
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid var(--border);
+            border-top-color: var(--primary-light);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            flex-shrink: 0;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .empty-state {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+            text-align: center;
+            padding: 3rem 2rem;
+            gap: 1.25rem;
+        }
+
+        .empty-state .icon {
+            width: 4rem;
+            height: 4rem;
+            background: var(--surface-raised);
+            border-radius: var(--radius-xl);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.75rem;
+            border: 1px solid var(--border);
+        }
+
+        .empty-state h2 {
+            font-weight: 600;
+            font-size: 1.1rem;
+            color: var(--text-secondary);
+        }
+
+        .empty-state p {
+            max-width: 24rem;
+            font-size: 0.9rem;
+            line-height: 1.6;
+        }
+
+        /* ─── Controls / Composer ────────────────────────── */
+        #controls {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-xl);
+            padding: 1rem 1.25rem 1.25rem 1.25rem;
+            box-shadow: var(--shadow-lg);
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 0.875rem;
+        }
+
+        .context-bar {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .context-field {
+            display: flex;
+            flex-direction: column;
+            gap: 0.375rem;
+            min-width: 200px;
+        }
+
+        .context-field label {
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+        }
+
+        .context-field select {
+            padding: 0.625rem 0.875rem;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            font-size: 0.9rem;
+            background: var(--surface);
+            color: var(--text);
+            min-width: 100%;
+            cursor: pointer;
+            transition: all 0.15s;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 0.75rem center;
+            padding-right: 2.5rem;
+        }
+
+        .context-field select:focus {
+            border-color: var(--primary-light);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+            outline: none;
+        }
+
+        .context-field select:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            background-color: var(--surface-raised);
+        }
+
+        /* ─── Document Checkbox List ─────────────────────── */
+        .doc-checkbox-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.125rem;
+            max-height: 200px;
+            overflow-y: auto;
+            padding: 0.375rem;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            background: var(--surface);
+            scrollbar-width: thin;
+            scrollbar-color: var(--border) transparent;
+        }
+
+        .doc-checkbox-list::-webkit-scrollbar { width: 4px; }
+        .doc-checkbox-list::-webkit-scrollbar-track { background: transparent; }
+        .doc-checkbox-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+        .doc-checkbox-list label {
+            display: flex;
+            align-items: center;
+            gap: 0.625rem;
+            font-size: 0.85rem;
+            cursor: pointer;
+            padding: 0.5rem 0.625rem;
+            border-radius: var(--radius);
+            transition: all 0.15s;
+            color: var(--text-secondary);
+            font-weight: 500;
+            position: relative;
+        }
+
+        .doc-checkbox-list label:hover {
+            background: var(--surface-hover);
+            color: var(--text);
+        }
+
+        .doc-checkbox-list input[type="checkbox"] {
+            appearance: none;
+            -webkit-appearance: none;
+            width: 1.125rem;
+            height: 1.125rem;
+            border: 2px solid var(--border);
+            border-radius: 0.35rem;
+            cursor: pointer;
+            position: relative;
+            transition: all 0.15s;
+            flex-shrink: 0;
+            margin: 0;
+        }
+
+        .doc-checkbox-list input[type="checkbox"]:hover { border-color: var(--primary-light); }
+
+        .doc-checkbox-list input[type="checkbox"]:checked {
+            background: var(--primary-light);
+            border-color: var(--primary-light);
+        }
+
+        .doc-checkbox-list input[type="checkbox"]:checked::after {
+            content: '';
+            position: absolute;
+            left: 4px;
+            top: 1px;
+            width: 5px;
+            height: 9px;
+            border: solid white;
+            border-width: 0 2px 2px 0;
+            transform: rotate(45deg);
+        }
+
+        .doc-checkbox-list .empty-msg {
+            color: var(--text-muted);
+            font-style: italic;
+            font-size: 0.8rem;
+            padding: 0.75rem 0.5rem;
+            text-align: center;
+        }
+
+        .selection-info {
+            display: flex;
+            align-items: center;
+            gap: 0.625rem;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            flex-wrap: wrap;
+            margin-top: 0.25rem;
+        }
+
+        .selection-info .selected-count {
+            background: var(--primary);
+            color: white;
+            padding: 0.15rem 0.625rem;
+            border-radius: 9999px;
+            font-weight: 700;
+            font-size: 0.7rem;
+            min-width: 1.5rem;
+            text-align: center;
+        }
+
+        .selection-info .clear-btn {
+            background: none;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 0.2rem 0.625rem;
+            font-size: 0.75rem;
+            cursor: pointer;
+            color: var(--text-muted);
+            transition: all 0.15s;
+            font-weight: 600;
+        }
+
+        .selection-info .clear-btn:hover:not(:disabled) {
+            background: #fef2f2;
+            color: var(--error);
+            border-color: #fecaca;
+        }
+
+        .selection-info .clear-btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        .selected-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.375rem;
+            margin-top: 0.25rem;
+            min-height: 1.5rem;
+        }
+
+        .selected-list .tag {
+            background: #eff6ff;
+            color: var(--primary-light);
+            border: 1px solid #dbeafe;
+            padding: 0.2rem 0.625rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            max-width: 140px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            transition: all 0.15s;
+        }
+
+        .selected-list .tag:hover { background: #dbeafe; }
+
+        .composer-divider {
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--border), transparent);
+            margin: 0.25rem 0;
+        }
+
+        .composer-row {
+            display: flex;
+            gap: 0.75rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .toggle-group {
+            display: flex;
+            gap: 1.25rem;
+            font-size: 0.8rem;
+        }
+
+        .toggle-group label {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            cursor: pointer;
+            user-select: none;
+            color: var(--text-secondary);
+            font-weight: 500;
+            transition: color 0.15s;
+        }
+
+        .toggle-group label:hover { color: var(--text); }
+
+        .toggle-group input[type="checkbox"] {
+            appearance: none;
+            -webkit-appearance: none;
+            width: 2rem;
+            height: 1.125rem;
+            background: var(--border);
+            border-radius: 9999px;
+            position: relative;
+            cursor: pointer;
+            transition: background 0.2s;
+            flex-shrink: 0;
+        }
+
+        .toggle-group input[type="checkbox"]:checked { background: var(--primary-light); }
+
+        .toggle-group input[type="checkbox"]::after {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 0.8rem;
+            height: 0.8rem;
+            background: white;
+            border-radius: 50%;
+            transition: transform 0.2s;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        }
+
+        .toggle-group input[type="checkbox"]:checked::after { transform: translateX(0.8rem); }
+
+        .input-group {
+            display: flex;
+            gap: 0.625rem;
+            width: 100%;
+        }
+
+        #query-input {
+            flex: 1;
+            padding: 0.875rem 1.125rem;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            font-size: 0.95rem;
+            outline: none;
+            font-family: inherit;
+            background: var(--surface);
+            color: var(--text);
+            transition: all 0.15s;
+            min-width: 0;
+        }
+
+        #query-input::placeholder { color: var(--text-muted); }
+
+        #query-input:focus {
+            border-color: var(--primary-light);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        #query-input:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            background: var(--surface-raised);
+        }
+
+        #send-btn {
+            padding: 0.875rem 1.75rem;
+            background: linear-gradient(135deg, var(--primary-light) 0%, var(--primary) 100%);
+            color: white;
+            border: none;
+            border-radius: var(--radius-lg);
+            font-weight: 600;
+            font-size: 0.95rem;
+            cursor: pointer;
+            font-family: inherit;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: all 0.2s;
+            box-shadow: var(--shadow-sm);
+            flex-shrink: 0;
+            white-space: nowrap;
+        }
+
+        #send-btn:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: var(--shadow);
+            filter: brightness(1.05);
+        }
+
+        #send-btn:active:not(:disabled) { transform: translateY(0); }
+
+        #send-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+            filter: none;
+        }
+
+        .options {
+            display: flex;
+            gap: 1.5rem;
+            font-size: 0.8rem;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .options label {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            cursor: pointer;
+            user-select: none;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .options input[type="checkbox"] {
+            appearance: none;
+            -webkit-appearance: none;
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid var(--border);
+            border-radius: 0.25rem;
+            cursor: pointer;
+            position: relative;
+            transition: all 0.15s;
+            flex-shrink: 0;
+        }
+
+        .options input[type="checkbox"]:checked {
+            background: var(--primary-light);
+            border-color: var(--primary-light);
+        }
+
+        .options input[type="checkbox"]:checked::after {
+            content: '';
+            position: absolute;
+            left: 3px;
+            top: 0px;
+            width: 4px;
+            height: 8px;
+            border: solid white;
+            border-width: 0 2px 2px 0;
+            transform: rotate(45deg);
+        }
+
+        /* ─── Upload & Status Panels ─────────────────────── */
+        .panel-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-xl);
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            box-shadow: var(--shadow-sm);
+            transition: box-shadow 0.2s;
+        }
+
+        .panel-card:hover { box-shadow: var(--shadow); }
+
+        .panel-card h3 {
+            font-size: 1rem;
+            font-weight: 700;
+            margin-bottom: 1.25rem;
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .panel-card .field-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .panel-card label {
+            font-size: 0.8rem;
+            font-weight: 700;
+            color: var(--text-secondary);
+            min-width: 100px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .panel-card input[type="text"],
+        .panel-card input[type="file"] {
+            padding: 0.625rem 0.875rem;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            font-size: 0.9rem;
+            flex: 1;
+            min-width: 200px;
+            background: var(--surface);
+            color: var(--text);
+            transition: all 0.15s;
+        }
+
+        .panel-card input[type="text"]:focus,
+        .panel-card input[type="file"]:focus {
+            border-color: var(--primary-light);
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        .panel-card input[type="file"] {
+            padding: 0.5rem 0.75rem;
+            cursor: pointer;
+        }
+
+        .panel-card input[type="file"]::file-selector-button {
+            background: var(--surface-raised);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 0.35rem 0.75rem;
+            margin-right: 0.75rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .panel-card input[type="file"]::file-selector-button:hover { background: var(--border); }
+
+        .panel-card .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 0.625rem;
+        }
+
+        .panel-card button {
+            padding: 0.625rem 1.5rem;
+            background: linear-gradient(135deg, var(--primary-light) 0%, var(--primary) 100%);
+            color: white;
+            border: none;
+            border-radius: var(--radius-lg);
+            font-weight: 600;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .panel-card button:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: var(--shadow);
+            filter: brightness(1.05);
+        }
+
+        .panel-card button:active:not(:disabled) { transform: translateY(0); }
+
+        .panel-card button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+            filter: none;
+        }
+
+        .panel-card .result-box {
+            background: var(--surface-raised);
+            border-radius: var(--radius-lg);
+            padding: 1rem;
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 0.8rem;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 320px;
+            overflow-y: auto;
+            margin-top: 0.75rem;
+            border: 1px solid var(--border);
+            scrollbar-width: thin;
+            scrollbar-color: var(--border) transparent;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+
+        .panel-card .result-box::-webkit-scrollbar { width: 5px; }
+        .panel-card .result-box::-webkit-scrollbar-track { background: transparent; }
+        .panel-card .result-box::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; }
+
+        .panel-card .result-box .upload-item {
+            padding: 0.5rem 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .panel-card .result-box .upload-item:last-child { border-bottom: none; }
+
+        .panel-card .status-badge {
+            display: inline-block;
+            padding: 0.2rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .status-badge.success { background: #dcfce7; color: #166534; }
+        .status-badge.error { background: #fee2e2; color: #991b1b; }
+        .status-badge.pending { background: #fef9c3; color: #854d0e; }
+
+        .file-list {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin: 0.25rem 0 0.75rem 0;
+            padding: 0.5rem 0.75rem;
+            background: var(--surface-raised);
+            border-radius: var(--radius);
+            border: 1px solid var(--border-light);
+        }
+
+        /* ─── Footer ─────────────────────────────────────── */
+        footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--border);
+            margin-top: 0.5rem;
+            flex-shrink: 0;
+        }
+
+        footer .status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-weight: 600;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+            position: relative;
+        }
+
+        .status-dot.online {
+            background: var(--success);
+            box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
+        }
+
+        .status-dot.offline {
+            background: var(--error);
+            box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
+        }
+
+        /* ─── Toast ──────────────────────────────────────── */
+        .toast-container {
+            position: fixed;
+            bottom: 1.5rem;
+            right: 1.5rem;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 0.625rem;
+            max-width: 400px;
+            width: 100%;
+            pointer-events: none;
+        }
+
+        .toast {
+            pointer-events: auto;
+            background: var(--surface);
+            color: var(--text);
+            padding: 1rem 1.25rem;
+            border-radius: var(--radius-xl);
+            box-shadow: var(--shadow-lg);
+            border-left: 4px solid var(--primary-light);
+            font-size: 0.9rem;
+            animation: toastSlide 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+            display: flex;
+            align-items: flex-start;
+            gap: 0.875rem;
+            line-height: 1.5;
+        }
+
+        .toast.error { border-left-color: var(--error); }
+        .toast.success { border-left-color: var(--success); }
+        .toast.warning { border-left-color: var(--warning); }
+
+        .toast .toast-close {
+            background: none;
+            border: none;
+            font-size: 1.25rem;
+            cursor: pointer;
+            color: var(--text-muted);
+            margin-left: auto;
+            padding: 0 0.25rem;
+            line-height: 1;
+            transition: color 0.15s;
+            flex-shrink: 0;
+        }
+
+        .toast .toast-close:hover { color: var(--text); }
+
+        @keyframes toastSlide {
+            0% { opacity: 0; transform: translateX(20px) scale(0.96); }
+            100% { opacity: 1; transform: translateX(0) scale(1); }
+        }
+
+        /* ─── Responsive ─────────────────────────────────── */
+        @media (max-width: 768px) {
+            #app { padding: 0.75rem; }
+            .brand-text h1 { font-size: 1.1rem; }
+            .panel-card .field-group { flex-direction: column; align-items: stretch; }
+            .panel-card label { min-width: auto; }
+            .tabs { width: 100%; align-self: stretch; }
+            .tab-btn { flex: 1; text-align: center; justify-content: center; padding: 0.5rem 0.25rem; font-size: 0.8rem; }
+
+            /* Stack sidebar above chat on small screens */
+            #tab-chat.active {
+                flex-direction: column;
+            }
+            .chat-sidebar {
+                width: 100%;
+                flex-shrink: 0;
+            }
+            .chat-main {
+                flex: 1;
+                min-height: 0;
+            }
+            .context-field { min-width: 100%; }
+            .doc-checkbox-list { min-width: 100%; }
+            .message { max-width: 92%; }
+            #send-btn { padding: 0.875rem 1.25rem; }
+            #send-label { display: none; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+        }
+    </style>
+<base target="_blank">
+</head>
+
+<body>
+    <div id="app">
+        <header>
+            <div class="brand">
+                <div class="brand-icon" aria-hidden="true">⚖️</div>
+                <div class="brand-text">
+                    <h1>Legal RAG</h1>
+                    <span>Assistant Juridique Intelligent</span>
+                </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                <span class="badge">Energy Contracts · France</span>
+                <button class="dark-toggle" id="dark-toggle" type="button" title="Basculer le thème">
+                    <span id="dark-toggle-icon">🌙</span>
+                </button>
+            </div>
+        </header>
+
+        <div class="tabs" role="tablist">
+            <button class="tab-btn active" data-tab="chat" role="tab" aria-selected="true">
+                <span>💬</span> Chat
+            </button>
+            <button class="tab-btn" data-tab="upload" role="tab" aria-selected="false">
+                <span>📤</span> Upload
+            </button>
+            <button class="tab-btn" data-tab="status" role="tab" aria-selected="false">
+                <span>📊</span> Status
+            </button>
+        </div>
+
+        <!-- ─── CHAT TAB ─────────────────────────────────── -->
+        <div id="tab-chat" class="tab-content active" role="tabpanel">
+            <!-- Sidebar pour la sélection du site et des documents -->
+            <aside class="chat-sidebar" id="chat-sidebar">
+                <div class="context-bar">
+                    <div class="context-field">
+                        <label for="site-selector">
+                            <span>🏢</span> Site <span style="color:var(--error);">*</span>
+                        </label>
+                        <select id="site-selector" required>
+                            <option value="">-- Choisissez un site --</option>
+                        </select>
+                    </div>
+                    <div class="context-field">
+                        <label for="doc-checkbox-container">
+                            <span>📑</span> Documents
+                        </label>
+                        <div id="doc-checkbox-container" class="doc-checkbox-list">
+                        </div>
+                        <div class="selection-info" id="selection-info">
+                            <span class="selected-count" id="selected-count">0</span>
+                            <span>document(s) sélectionné(s)</span>
+                            <button class="clear-btn" id="clear-selection" disabled>✕ Effacer</button>
+                        </div>
+                        <div class="selected-list" id="selected-list"></div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Zone principale : chat + compositeur -->
+            <div class="chat-main">
+                <div id="chat-area">
+                    <div class="empty-state" id="empty-state">
+                        <div class="icon" aria-hidden="true">💬</div>
+                        <h2>Posez votre question juridique</h2>
+                        <p>
+                            Sélectionnez un site et un ou plusieurs documents dans la barre latérale,
+                            puis posez votre question ici.
+                        </p>
+                    </div>
+                </div>
+
+                <div id="controls">
+                    <div class="composer-row">
+                        <div class="toggle-group" role="group" aria-label="Options de recherche">
+                            <label>
+                                <input type="checkbox" id="hybrid" checked />
+                                <span>Hybrid Search</span>
+                            </label>
+                        </div>
+                        <div class="options" style="margin-left: auto;">
+                            <label>
+                                <input type="checkbox" id="auto-optimize" checked />
+                                Auto‑optimiser
+                            </label>
+                            <label>
+                                <input type="checkbox" id="generate" checked />
+                                Générer une réponse
+                            </label>
+                        </div>
+                    </div>
+                    <div class="composer-divider"></div>
+                    <div class="input-group">
+                        <input type="text" id="query-input" placeholder="Posez votre question juridique…" autofocus maxlength="4000" disabled />
+                        <button id="send-btn" type="button" disabled>
+                            <span id="send-label">Envoyer</span>
+                            <span>→</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ─── UPLOAD TAB ─────────────────────────────── -->
+        <div id="tab-upload" class="tab-content" role="tabpanel">
+            <div class="panel-card">
+                <h3>📤 Upload multiple PDFs</h3>
+                <div class="field-group">
+                    <label for="upload-file">PDF Files</label>
+                    <input type="file" id="upload-file" accept=".pdf" multiple />
+                </div>
+                <div class="file-list" id="file-list"></div>
+                <div class="field-group">
+                    <label for="upload-doc-id">Document ID prefix</label>
+                    <input type="text" id="upload-doc-id" placeholder="Optional – will be used as prefix for each file" />
+                </div>
+                <div class="field-group">
+                    <label for="upload-sync">Sync</label>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="upload-sync" />
+                        <span style="font-size:0.875rem;color:var(--text-secondary);">Return JSON immediately (blocking)</span>
+                    </div>
+                </div>
+                <button id="upload-btn" type="button">Upload &amp; Parse All</button>
+                <div id="upload-result" class="result-box" style="display:none;"></div>
+            </div>
+            <div class="panel-card">
+                <h3>📂 Parse from GCS</h3>
+                <div class="field-group">
+                    <label for="gcs-doc-id">Document ID</label>
+                    <input type="text" id="gcs-doc-id" placeholder="e.g., contract-123" />
+                </div>
+                <div class="field-group">
+                    <label for="gcs-uri">GCS URI</label>
+                    <input type="text" id="gcs-uri" placeholder="gs://bucket/path/file.pdf" />
+                </div>
+                <button id="gcs-btn" type="button">Parse from GCS</button>
+                <div id="gcs-result" class="result-box" style="display:none;"></div>
+            </div>
+        </div>
+
+        <!-- ─── STATUS TAB ───────────────────────────────── -->
+        <div id="tab-status" class="tab-content" role="tabpanel">
+            <div class="panel-card">
+                <h3>🔍 Check Document Status</h3>
+                <div class="field-group">
+                    <label for="status-doc-id">Document ID</label>
+                    <input type="text" id="status-doc-id" placeholder="Document ID" />
+                </div>
+                <button id="status-btn" type="button">Get Status</button>
+                <div id="status-result" class="result-box" style="display:none;"></div>
+            </div>
+            <div class="panel-card">
+                <h3>❤️ Health Check</h3>
+                <button id="health-btn" type="button">Check Health</button>
+                <div id="health-result" class="result-box" style="display:none;"></div>
+            </div>
+        </div>
+
+        <footer>
+            <span class="status">
+                <span class="status-dot online" id="status-dot" aria-hidden="true"></span>
+                <span id="status-text">Connecté</span>
+            </span>
+            <span id="doc-count">Chargement…</span>
+        </footer>
+    </div>
+
+    <div class="toast-container" id="toast-container" role="status" aria-live="polite"></div>
+
+    <script>
+        (function() {
+            'use strict';
+
+            const CONFIG = window.APP_CONFIG || {};
+            const API_BASE = CONFIG.API_BASE || '/api';
+            const MAX_RETRIES = CONFIG.MAX_RETRIES ?? 3;
+            const RETRY_DELAY = CONFIG.RETRY_DELAY ?? 1000;
+            const TIMEOUT = CONFIG.TIMEOUT ?? 30000;
+            const MAX_MESSAGE_LENGTH = CONFIG.MAX_MESSAGE_LENGTH ?? 4000;
+            const PERSIST_MESSAGES = CONFIG.PERSIST_MESSAGES ?? true;
+            const STORAGE_KEY = CONFIG.STORAGE_KEY || 'legal_rag_chat_history';
+            const THEME_STORAGE_KEY = 'legal_rag_theme';
+
+            // ─── Dark Mode ─────────────────────────────────
+            const darkToggle = document.getElementById('dark-toggle');
+            const darkToggleIcon = document.getElementById('dark-toggle-icon');
+
+            function getPreferredTheme() {
+                const saved = localStorage.getItem(THEME_STORAGE_KEY);
+                if (saved) return saved;
+                return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            }
+
+            function applyTheme(theme) {
+                if (theme === 'dark') {
+                    document.documentElement.setAttribute('data-theme', 'dark');
+                    darkToggleIcon.textContent = '☀️';
+                } else {
+                    document.documentElement.removeAttribute('data-theme');
+                    darkToggleIcon.textContent = '🌙';
+                }
+                localStorage.setItem(THEME_STORAGE_KEY, theme);
+            }
+
+            applyTheme(getPreferredTheme());
+
+            darkToggle.addEventListener('click', () => {
+                const current = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+                applyTheme(current === 'dark' ? 'light' : 'dark');
+            });
+
+            // ─── Rest of the script (identical to previous version) ───
+            const chatArea = document.getElementById('chat-area');
+            const queryInput = document.getElementById('query-input');
+            const sendBtn = document.getElementById('send-btn');
+            const sendLabel = document.getElementById('send-label');
+            const hybridCheck = document.getElementById('hybrid');
+            const generateCheck = document.getElementById('generate');
+            const autoOptimizeCheck = document.getElementById('auto-optimize');
+            const emptyState = document.getElementById('empty-state');
+
+            const siteSelector = document.getElementById('site-selector');
+            const docCheckboxContainer = document.getElementById('doc-checkbox-container');
+            const selectionInfo = document.getElementById('selection-info');
+            const selectedCount = document.getElementById('selected-count');
+            const clearBtn = document.getElementById('clear-selection');
+            const selectedList = document.getElementById('selected-list');
+
+            const uploadFile = document.getElementById('upload-file');
+            const uploadDocId = document.getElementById('upload-doc-id');
+            const uploadSync = document.getElementById('upload-sync');
+            const uploadBtn = document.getElementById('upload-btn');
+            const uploadResult = document.getElementById('upload-result');
+            const fileList = document.getElementById('file-list');
+
+            const gcsDocId = document.getElementById('gcs-doc-id');
+            const gcsUri = document.getElementById('gcs-uri');
+            const gcsBtn = document.getElementById('gcs-btn');
+            const gcsResult = document.getElementById('gcs-result');
+
+            const statusDocId = document.getElementById('status-doc-id');
+            const statusBtn = document.getElementById('status-btn');
+            const statusResult = document.getElementById('status-result');
+            const healthBtn = document.getElementById('health-btn');
+            const healthResult = document.getElementById('health-result');
+
+            const docCountSpan = document.getElementById('doc-count');
+            const statusDot = document.getElementById('status-dot');
+            const statusText = document.getElementById('status-text');
+            const toastContainer = document.getElementById('toast-container');
+
+            const tabBtns = document.querySelectorAll('.tab-btn');
+            const tabContents = {
+                chat: document.getElementById('tab-chat'),
+                upload: document.getElementById('tab-upload'),
+                status: document.getElementById('tab-status'),
+            };
+
+            let isProcessing = false;
+            let messages = [];
+            let docCount = null;
+            let allDocuments = [];
+            let allSites = [];
+
+            function uid() {
+                return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+            }
+
+            function escapeHtml(text) {
+                if (!text) return '';
+                const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+                return text.replace(/[&<>"']/g, m => map[m]);
+            }
+
+            function sleep(ms) {
+                return new Promise(resolve => setTimeout(resolve, ms));
+            }
+
+            function scrollToBottom() {
+                requestAnimationFrame(() => {
+                    chatArea.scrollTop = chatArea.scrollHeight;
+                });
+            }
+
+            function showToast(message, type = 'info', duration = 5000) {
+                const icons = { info: 'ℹ️', success: '✅', error: '❌', warning: '⚠️' };
+                const toast = document.createElement('div');
+                toast.className = `toast ${type}`;
+                toast.innerHTML = `
+                    <span style="font-size:1.1rem;flex-shrink:0;">${icons[type] || 'ℹ️'}</span>
+                    <span style="flex:1;">${escapeHtml(message)}</span>
+                    <button class="toast-close" aria-label="Fermer">&times;</button>
+                `;
+                toast.querySelector('.toast-close').addEventListener('click', () => {
+                    toast.style.animation = 'toastSlide 0.2s ease-in reverse';
+                    setTimeout(() => toast.remove(), 200);
+                });
+                toastContainer.appendChild(toast);
+                if (duration > 0) {
+                    setTimeout(() => {
+                        if (toast.parentNode) {
+                            toast.style.animation = 'toastSlide 0.2s ease-in reverse';
+                            setTimeout(() => toast.remove(), 200);
+                        }
+                    }, duration);
+                }
+            }
+
+            async function apiRequest(endpoint, options = {}) {
+                const url = `${API_BASE}${endpoint}`;
+                const method = options.method || 'POST';
+                const body = options.body ? JSON.stringify(options.body) : undefined;
+                const headers = {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    ...(options.headers || {}),
+                };
+
+                let lastError = null;
+                for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT);
+                    try {
+                        const resp = await fetch(url, {
+                            method,
+                            headers,
+                            body,
+                            signal: controller.signal,
+                        });
+                        clearTimeout(timeoutId);
+                        if (!resp.ok) {
+                            let errMsg = `Erreur ${resp.status}`;
+                            try {
+                                const data = await resp.json();
+                                errMsg = data.error || data.message || errMsg;
+                            } catch (_) { }
+                            throw new Error(errMsg);
+                        }
+                        const contentType = resp.headers.get('content-type') || '';
+                        if (contentType.includes('application/json')) {
+                            return await resp.json();
+                        } else {
+                            return await resp.text();
+                        }
+                    } catch (err) {
+                        clearTimeout(timeoutId);
+                        lastError = err;
+                        if (err.name === 'AbortError') {
+                            throw new Error('La requête a été annulée.');
+                        }
+                        const isRetryable = !err.message.includes('Erreur 4') && !err.message.includes('Erreur 40');
+                        if (!isRetryable || attempt > MAX_RETRIES) break;
+                        await sleep(RETRY_DELAY * Math.pow(2, attempt - 1));
+                    }
+                }
+                throw lastError || new Error('Échec de la requête.');
+            }
+
+            function updateQueryControlsState() {
+                const siteSelected = !!siteSelector.value;
+                const docsAvailable = docCheckboxContainer.querySelectorAll('input[type="checkbox"]').length > 0;
+                const shouldEnable = siteSelected && docsAvailable;
+                queryInput.disabled = !shouldEnable;
+                sendBtn.disabled = !shouldEnable;
+            }
+
+            async function loadDropdownOptions() {
+                try {
+                    const data = await apiRequest('/dropdown-options', { method: 'GET' });
+                    allSites = data.sites || [];
+                    allDocuments = data.documents || [];
+
+                    siteSelector.innerHTML = '<option value="">-- Choisissez un site --</option>';
+                    allSites.forEach(site => {
+                        const opt = document.createElement('option');
+                        opt.value = site;
+                        opt.textContent = site;
+                        siteSelector.appendChild(opt);
+                    });
+
+                    siteSelector.disabled = false;
+                    updateDocCheckboxes('');
+                    updateQueryControlsState();
+
+                    if (allSites.length === 1) {
+                        siteSelector.value = allSites[0];
+                        siteSelector.dispatchEvent(new Event('change'));
+                    }
+                } catch (err) {
+                    showToast('Erreur lors du chargement des options : ' + err.message, 'error', 6000);
+                }
+            }
+
+            function updateDocCheckboxes(siteName) {
+                docCheckboxContainer.innerHTML = '';
+                if (!siteName) {
+                    const msg = document.createElement('div');
+                    msg.className = 'empty-msg';
+                    msg.textContent = 'Sélectionnez un site pour voir les documents';
+                    docCheckboxContainer.appendChild(msg);
+                    updateQueryControlsState();
+                    return;
+                }
+
+                const docs = allDocuments.filter(d => d.site_name === siteName);
+                if (docs.length === 0) {
+                    const msg = document.createElement('div');
+                    msg.className = 'empty-msg';
+                    msg.textContent = 'Aucun document pour ce site';
+                    docCheckboxContainer.appendChild(msg);
+                    updateQueryControlsState();
+                    return;
+                }
+
+                docs.forEach(doc => {
+                    const label = document.createElement('label');
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.value = doc.id;
+                    checkbox.addEventListener('change', function() {
+                        updateSelectionUI(getSelectedDocIds());
+                    });
+                    label.appendChild(checkbox);
+                    label.appendChild(document.createTextNode(doc.label));
+                    docCheckboxContainer.appendChild(label);
+                });
+
+                updateQueryControlsState();
+                updateSelectionUI([]);
+            }
+
+            function getSelectedDocIds() {
+                const checkboxes = docCheckboxContainer.querySelectorAll('input[type="checkbox"]:checked');
+                return Array.from(checkboxes).map(cb => cb.value);
+            }
+
+            function updateSelectionUI(selectedIds) {
+                const count = selectedIds.length;
+                selectedCount.textContent = count;
+                clearBtn.disabled = count === 0;
+                selectedList.innerHTML = '';
+                if (count > 0) {
+                    const names = selectedIds.map(id => {
+                        const doc = allDocuments.find(d => d.id === id);
+                        return doc ? doc.label : id;
+                    });
+                    names.forEach(name => {
+                        const tag = document.createElement('span');
+                        tag.className = 'tag';
+                        tag.textContent = name;
+                        selectedList.appendChild(tag);
+                    });
+                }
+            }
+
+            function renderAllMessages() {
+                chatArea.querySelectorAll('.message, .loading').forEach(el => el.remove());
+                if (messages.length === 0) {
+                    emptyState.style.display = 'flex';
+                    return;
+                }
+                emptyState.style.display = 'none';
+                messages.forEach(msg => {
+                    if (msg.role === 'user') {
+                        addMessage('user', msg.content);
+                    } else if (msg.role === 'assistant') {
+                        renderAssistantResponse(msg.data, true);
+                    }
+                });
+                scrollToBottom();
+            }
+
+            function addMessage(role, content) {
+                const div = document.createElement('div');
+                div.className = `message ${role}`;
+                const inner = document.createElement('div');
+                inner.textContent = content;
+                div.appendChild(inner);
+                chatArea.appendChild(div);
+                scrollToBottom();
+                return div;
+            }
+
+            let loadingElement = null;
+
+            function addLoading() {
+                removeLoading();
+                loadingElement = document.createElement('div');
+                loadingElement.className = 'message assistant loading';
+                loadingElement.textContent = 'Recherche en cours…';
+                chatArea.appendChild(loadingElement);
+                scrollToBottom();
+            }
+
+            function removeLoading() {
+                if (loadingElement && loadingElement.parentNode) {
+                    loadingElement.remove();
+                }
+                loadingElement = null;
+            }
+
+            function renderAssistantResponse(data, skipPersistence = false) {
+                const container = document.createElement('div');
+                container.className = 'message assistant';
+                const inner = document.createElement('div');
+
+                if (data.answer) {
+                    const answerDiv = document.createElement('div');
+                    answerDiv.className = 'answer';
+                    answerDiv.textContent = data.answer;
+                    inner.appendChild(answerDiv);
+                } else {
+                    const answerDiv = document.createElement('div');
+                    answerDiv.className = 'answer';
+                    answerDiv.textContent = 'Aucune réponse générée.';
+                    inner.appendChild(answerDiv);
+                }
+
+                const chunks = data.retrieved_chunks || data.sources || [];
+                if (chunks.length > 0) {
+                    const details = document.createElement('details');
+                    details.className = 'chunks';
+                    const summary = document.createElement('summary');
+                    summary.textContent = `${chunks.length} source(s) utilisées`;
+                    details.appendChild(summary);
+                    const ul = document.createElement('ul');
+                    chunks.forEach((chunk) => {
+                        const li = document.createElement('li');
+                        const heading = chunk.heading || chunk.title || 'Sans titre';
+                        const text = chunk.text || chunk.content || '';
+                        const snippet = text.slice(0, 200) + (text.length > 200 ? '…' : '');
+                        const rerankScore = (typeof chunk.rerank_score === 'number') ? chunk.rerank_score.toFixed(3) : '';
+                        const score = (typeof chunk.score === 'number') ? chunk.score.toFixed(3) : '';
+                        li.innerHTML = `
+                            <div><strong>${escapeHtml(heading)}</strong> — ${escapeHtml(snippet)}</div>
+                            <div class="meta">
+                                <span>${escapeHtml(chunk.id || chunk.filename || '—')}</span>
+                                <span>${escapeHtml(chunk.metadata?.breadcrumb || '—')}</span>
+                                ${rerankScore ? `<span>🎯 ${rerankScore}</span>` : ''}
+                                ${score ? `<span>📊 ${score}</span>` : ''}
+                            </div>
+                        `;
+                        ul.appendChild(li);
+                    });
+                    details.appendChild(ul);
+                    inner.appendChild(details);
+                } else {
+                    const noChunks = document.createElement('div');
+                    noChunks.className = 'chunks';
+                    noChunks.textContent = 'Aucun extrait trouvé.';
+                    inner.appendChild(noChunks);
+                }
+
+                container.appendChild(inner);
+                chatArea.appendChild(container);
+                scrollToBottom();
+
+                if (!skipPersistence) {
+                    messages.push({ id: uid(), role: 'assistant', data: data, timestamp: Date.now() });
+                    persistMessages();
+                }
+            }
+
+            function setControlsDisabled(disabled) {
+                queryInput.disabled = disabled;
+                sendBtn.disabled = disabled;
+                hybridCheck.disabled = disabled;
+                generateCheck.disabled = disabled;
+                autoOptimizeCheck.disabled = disabled;
+            }
+
+            async function performChatRequest(payload) {
+                if (isProcessing) return;
+                isProcessing = true;
+                setControlsDisabled(true);
+                addLoading();
+
+                try {
+                    const response = await apiRequest('/chat', { method: 'POST', body: payload });
+                    removeLoading();
+                    renderAssistantResponse(response);
+                    if (response.document_count !== undefined) {
+                        docCount = response.document_count;
+                        updateDocCount();
+                    }
+                    persistMessages();
+                } catch (error) {
+                    removeLoading();
+                    const errorMsg = error.message || 'Une erreur est survenue.';
+                    const errorDiv = document.createElement('div');
+                    errorDiv.className = 'message assistant error';
+                    const inner = document.createElement('div');
+                    inner.textContent = `❌ Erreur: ${errorMsg}`;
+                    const retryBtn = document.createElement('button');
+                    retryBtn.className = 'retry-btn';
+                    retryBtn.textContent = 'Réessayer';
+                    retryBtn.addEventListener('click', () => {
+                        errorDiv.remove();
+                        performChatRequest(payload);
+                    });
+                    inner.appendChild(retryBtn);
+                    errorDiv.appendChild(inner);
+                    chatArea.appendChild(errorDiv);
+                    scrollToBottom();
+                    showToast(errorMsg, 'error', 6000);
+                } finally {
+                    isProcessing = false;
+                    hybridCheck.disabled = false;
+                    generateCheck.disabled = false;
+                    autoOptimizeCheck.disabled = false;
+                    updateQueryControlsState();
+                    queryInput.focus();
+                }
+            }
+
+            async function sendQuery() {
+                if (isProcessing) return;
+                const query = queryInput.value.trim();
+                if (!query) {
+                    showToast('Veuillez saisir une question.', 'warning');
+                    return;
+                }
+                if (query.length > MAX_MESSAGE_LENGTH) {
+                    showToast(`La question dépasse ${MAX_MESSAGE_LENGTH} caractères.`, 'error');
+                    return;
+                }
+
+                const site = siteSelector.value;
+                if (!site) {
+                    showToast('Veuillez sélectionner un site.', 'warning');
+                    siteSelector.focus();
+                    return;
+                }
+
+                const docIds = getSelectedDocIds();
+
+                const payload = {
+                    query: query,
+                    generate: generateCheck.checked,
+                    hybrid: hybridCheck.checked,
+                    auto_optimize: autoOptimizeCheck.checked,
+                };
+
+                if (docIds.length === 0) {
+                    payload.site_name = site;
+                } else if (docIds.length === 1) {
+                    payload.document_id = docIds[0];
+                } else {
+                    payload.document_ids = docIds;
+                }
+
+                if (!autoOptimizeCheck.checked) {
+                    payload.top_k = 3;
+                    payload.rerank = true;
+                    payload.expand = false;
+                }
+
+                addMessage('user', query);
+                messages.push({ id: uid(), role: 'user', content: query, timestamp: Date.now() });
+                queryInput.value = '';
+                queryInput.focus();
+                persistMessages();
+
+                await performChatRequest(payload);
+            }
+
+            uploadFile.addEventListener('change', function() {
+                const files = this.files;
+                let html = '';
+                if (files.length === 0) {
+                    html = '<span style="color:var(--text-muted);">Aucun fichier sélectionné</span>';
+                } else {
+                    html = `<strong>${files.length} fichier(s) sélectionné(s) :</strong> `;
+                    html += Array.from(files).map(f => f.name).join(', ');
+                }
+                fileList.innerHTML = html;
+            });
+
+            async function uploadDocuments() {
+                const files = uploadFile.files;
+                if (files.length === 0) {
+                    showToast('Veuillez sélectionner au moins un PDF.', 'warning');
+                    return;
+                }
+                for (let f of files) {
+                    if (!f.name.endsWith('.pdf')) {
+                        showToast(`Le fichier "${f.name}" n'est pas un PDF.`, 'error');
+                        return;
+                    }
+                }
+                const baseDocId = uploadDocId.value.trim() || 'doc';
+                const sync = uploadSync.checked;
+                uploadBtn.disabled = true;
+                uploadResult.style.display = 'block';
+                uploadResult.innerHTML = '⏳ Envoi en cours…';
+                let results = [];
+                let successCount = 0;
+                let errorCount = 0;
+                for (let i = 0; i < files.length; i++) {
+                    const file = files[i];
+                    const docId = `${baseDocId}-${i + 1}-${Date.now().toString(36)}`;
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    formData.append('document_id', docId);
+                    const url = `${API_BASE}/parse${sync ? '?sync=true' : ''}`;
+                    try {
+                        const resp = await fetch(url, { method: 'POST', body: formData });
+                        if (!resp.ok) {
+                            let errMsg = `Erreur ${resp.status}`;
+                            try { const data = await resp.json(); errMsg = data.error || data.message || errMsg; } catch (_) {}
+                            throw new Error(errMsg);
+                        }
+                        const data = await resp.json();
+                        results.push({ file: file.name, docId, status: 'success', data });
+                        successCount++;
+                    } catch (err) {
+                        results.push({ file: file.name, docId, status: 'error', error: err.message });
+                        errorCount++;
+                    }
+                }
+                let html = `<div><strong>${results.length} fichier(s) traité(s) :</strong> ${successCount} succès, ${errorCount} échecs</div>`;
+                results.forEach(r => {
+                    const statusIcon = r.status === 'success' ? '✅' : '❌';
+                    html += `<div class="upload-item">${statusIcon} <strong>${escapeHtml(r.file)}</strong> (ID: ${escapeHtml(r.docId)})`;
+                    if (r.status === 'success') {
+                        html += ` — ${escapeHtml(r.data.message || 'OK')}`;
+                    } else {
+                        html += ` — ❌ ${escapeHtml(r.error)}`;
+                    }
+                    html += '</div>';
+                });
+                uploadResult.innerHTML = html;
+                showToast(`${successCount} fichier(s) uploadé(s) avec succès.`, successCount > 0 ? 'success' : 'error');
+                if (successCount > 0) await fetchDocCount();
+                uploadBtn.disabled = false;
+            }
+
+            async function parseFromGCS() {
+                const docId = gcsDocId.value.trim();
+                const uri = gcsUri.value.trim();
+                if (!docId || !uri) {
+                    showToast('Document ID et GCS URI sont requis.', 'warning');
+                    return;
+                }
+                if (!uri.startsWith('gs://')) {
+                    showToast('URI doit commencer par gs://', 'error');
+                    return;
+                }
+                const formData = new FormData();
+                formData.append('document_id', docId);
+                formData.append('gcs_uri', uri);
+                gcsBtn.disabled = true;
+                gcsResult.style.display = 'block';
+                gcsResult.textContent = '⏳ Envoi…';
+                try {
+                    const resp = await fetch(`${API_BASE}/parse_from_gcs`, { method: 'POST', body: formData });
+                    if (!resp.ok) {
+                        let errMsg = `Erreur ${resp.status}`;
+                        try { const data = await resp.json(); errMsg = data.error || data.message || errMsg; } catch (_) {}
+                        throw new Error(errMsg);
+                    }
+                    const data = await resp.json();
+                    gcsResult.textContent = JSON.stringify(data, null, 2);
+                    showToast(`Parse from GCS lancé pour ${docId}.`, 'success');
+                } catch (err) {
+                    gcsResult.textContent = `❌ ${err.message}`;
+                    showToast(err.message, 'error');
+                } finally {
+                    gcsBtn.disabled = false;
+                }
+            }
+
+            async function checkStatus() {
+                const docId = statusDocId.value.trim();
+                if (!docId) {
+                    showToast('Veuillez saisir un Document ID.', 'warning');
+                    return;
+                }
+                statusBtn.disabled = true;
+                statusResult.style.display = 'block';
+                statusResult.textContent = '⏳ Recherche…';
+                try {
+                    const data = await apiRequest(`/status?document_id=${encodeURIComponent(docId)}`, { method: 'GET' });
+                    statusResult.textContent = JSON.stringify(data, null, 2);
+                } catch (err) {
+                    statusResult.textContent = `❌ ${err.message}`;
+                    showToast(err.message, 'error');
+                } finally {
+                    statusBtn.disabled = false;
+                }
+            }
+
+            async function checkHealth() {
+                healthBtn.disabled = true;
+                healthResult.style.display = 'block';
+                healthResult.textContent = '⏳ Vérification…';
+                try {
+                    const data = await apiRequest('/health', { method: 'GET' });
+                    healthResult.textContent = JSON.stringify(data, null, 2);
+                    if (data.status === 'healthy' || data.status === 'degraded') {
+                        showToast(`Santé: ${data.status}`, data.status === 'healthy' ? 'success' : 'warning');
+                    }
+                } catch (err) {
+                    healthResult.textContent = `❌ ${err.message}`;
+                    showToast(err.message, 'error');
+                } finally {
+                    healthBtn.disabled = false;
+                }
+            }
+
+            function persistMessages() {
+                if (!PERSIST_MESSAGES) return;
+                try {
+                    sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ messages, docCount }));
+                } catch (_) {}
+            }
+
+            function loadPersisted() {
+                if (!PERSIST_MESSAGES) return;
+                try {
+                    const raw = sessionStorage.getItem(STORAGE_KEY);
+                    if (!raw) return;
+                    const data = JSON.parse(raw);
+                    if (data.messages && Array.isArray(data.messages)) {
+                        messages = data.messages;
+                        if (data.docCount !== undefined) docCount = data.docCount;
+                        renderAllMessages();
+                        updateDocCount();
+                    }
+                } catch (_) {}
+            }
+
+            async function fetchDocCount() {
+                try {
+                    const resp = await apiRequest('/documents/count', { method: 'GET' });
+                    docCount = resp.count || resp.total || 0;
+                    updateDocCount();
+                } catch (_) {
+                    docCount = null;
+                    updateDocCount();
+                }
+            }
+
+            function updateDocCount() {
+                docCountSpan.textContent = (docCount !== null && docCount !== undefined) ?
+                    `${docCount} documents` :
+                    '… documents';
+            }
+
+            function updateOnlineStatus(online) {
+                statusDot.className = `status-dot ${online ? 'online' : 'offline'}`;
+                statusText.textContent = online ? 'Connecté' : 'Hors ligne';
+                if (!online) showToast('Vous êtes hors ligne.', 'warning', 4000);
+            }
+
+            window.addEventListener('online', () => {
+                updateOnlineStatus(true);
+                fetchDocCount();
+            });
+            window.addEventListener('offline', () => updateOnlineStatus(false));
+
+            tabBtns.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const tab = btn.dataset.tab;
+                    tabBtns.forEach(b => {
+                        b.classList.remove('active');
+                        b.setAttribute('aria-selected', 'false');
+                    });
+                    btn.classList.add('active');
+                    btn.setAttribute('aria-selected', 'true');
+                    Object.keys(tabContents).forEach(key => {
+                        tabContents[key].classList.toggle('active', key === tab);
+                    });
+                    if (tab === 'chat') queryInput.focus();
+                });
+            });
+
+            siteSelector.addEventListener('change', function() {
+                const site = this.value;
+                updateDocCheckboxes(site);
+                updateSelectionUI([]);
+            });
+
+            clearBtn.addEventListener('click', function() {
+                const checkboxes = docCheckboxContainer.querySelectorAll('input[type="checkbox"]');
+                checkboxes.forEach(cb => cb.checked = false);
+                updateSelectionUI([]);
+            });
+
+            sendBtn.addEventListener('click', sendQuery);
+            queryInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendQuery();
+                }
+                if (e.key === 'Escape') {
+                    queryInput.value = '';
+                    queryInput.blur();
+                }
+            });
+
+            uploadBtn.addEventListener('click', uploadDocuments);
+            gcsBtn.addEventListener('click', parseFromGCS);
+            statusBtn.addEventListener('click', checkStatus);
+            healthBtn.addEventListener('click', checkHealth);
+
+            document.querySelector('header').addEventListener('dblclick', () => {
+                if (confirm('Effacer l\'historique de la discussion ?')) {
+                    messages = [];
+                    chatArea.querySelectorAll('.message, .loading').forEach(el => el.remove());
+                    emptyState.style.display = 'flex';
+                    persistMessages();
+                    showToast('Historique effacé.', 'success', 3000);
+                }
+            });
+
+            async function init() {
+                loadPersisted();
+                if (messages.length === 0) {
+                    emptyState.style.display = 'flex';
+                } else {
+                    emptyState.style.display = 'none';
+                }
+                await loadDropdownOptions();
+                await fetchDocCount();
+                updateOnlineStatus(navigator.onLine);
+                queryInput.focus();
+                scrollToBottom();
+            }
+
+            init().catch(err => {
+                console.error('[RAG] Init error:', err);
+                showToast('Erreur au démarrage.', 'error', 5000);
+            });
+
+        })();
+    </script>
+</body>
+</html>
