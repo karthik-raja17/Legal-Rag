@@ -20,7 +20,7 @@ from tenacity import (
 from vertexai.generative_models import GenerativeModel
 from vertexai.generative_models import GenerationConfig
 
-from src.settings import settings
+from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 

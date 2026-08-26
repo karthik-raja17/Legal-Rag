@@ -32,7 +32,7 @@ from src.core.indexer.chroma_client import ChromaClient
 from src.core.parser.pdf_parser import PDFParser
 from src.core.storage.gcs import GCSClient
 from src.core.pubsub.publisher import Publisher
-from src.settings import settings
+from src.config.settings import settings
 from src.core.retrieval.hybrid_retriever import HybridRetriever
 from src.core.retrieval.reranker import VertexReranker
 from src.core.retrieval.query_expander import QueryExpander

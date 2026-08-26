@@ -16,7 +16,7 @@ from vertexai.generative_models import (
     HarmCategory,
 )
 
-from src.settings import settings
+from src.config.settings import settings
 
 vertexai.init(project=settings.GCP_PROJECT_ID, location=settings.GCP_LOCATION)
 logger = logging.getLogger(__name__)

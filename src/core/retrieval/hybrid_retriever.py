@@ -13,7 +13,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 from src.core.indexer.chroma_client import ChromaClient
 from src.core.retrieval.reciprocal_rank_fusion import reciprocal_rank_fusion
 from src.core.embedding.bge_client import BGEEmbedderClient
-from src.settings import settings
+from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 

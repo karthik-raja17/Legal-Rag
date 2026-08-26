@@ -6,8 +6,8 @@ from typing import List, Dict, Any, Optional
 # ===================== CONFIGURATION =====================
 import os
 PARSER_URL = os.getenv("PARSER_URL", "https://your-parser-service-url/query")
-GOLDEN_PATH = os.getenv("GOLDEN_PATH", "golden_with_chunks_bge.jsonl")
-MAPPING_PATH = os.getenv("MAPPING_PATH", "doc_id_to_site.json")
+GOLDEN_PATH = os.getenv("GOLDEN_PATH", "data/golden_with_chunks_bge.jsonl")
+MAPPING_PATH = os.getenv("MAPPING_PATH", "data/doc_id_to_site.json")
 
 # ===================== LOAD DATA =====================
 def load_golden(path: str = GOLDEN_PATH) -> List[Dict]:

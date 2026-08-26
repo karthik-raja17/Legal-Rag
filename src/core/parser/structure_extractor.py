@@ -27,7 +27,7 @@ except ImportError:
     logger = logging.getLogger(__name__)
     logger.warning("Dedoc not installed - structure extraction will fall back to regex")
 
-from src.settings import settings
+from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 

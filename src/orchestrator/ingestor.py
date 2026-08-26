@@ -28,7 +28,7 @@ from openpyxl.cell.cell import Cell
 from src.adapters.drive_client import DriveClient, DriveFileNotFound
 from src.adapters.firestore_client import FirestoreClient
 from src.adapters.gcs_client import GCSClient
-from src.settings import settings
+from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 

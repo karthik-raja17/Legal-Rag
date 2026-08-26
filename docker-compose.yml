@@ -21,7 +21,9 @@ services:
       - chroma_data:/chroma/chroma
 
   app:
-    build: .
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
     container_name: legal-rag-app
     ports:
       - "8080:8080"

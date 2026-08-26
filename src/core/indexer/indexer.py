@@ -21,7 +21,7 @@ from src.core.parser.chunker import DocumentChunker
 from src.core.indexer.chroma_client import ChromaClient
 from src.core.parser.pdf_parser import ParsedDocument
 from src.core.embedding.bge_client import BGEEmbedderClient
-from src.settings import settings
+from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 

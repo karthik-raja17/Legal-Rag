@@ -9,7 +9,7 @@ from googleapiclient.errors import HttpError
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 from requests.exceptions import ConnectionError, Timeout
 
-from src.settings import settings
+from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 

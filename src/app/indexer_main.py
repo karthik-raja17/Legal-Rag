@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from src.core.indexer.indexer import Indexer
 from src.core.storage.gcs import GCSClient
 from src.core.parser.pdf_parser import ParsedDocument
-from src.settings import settings
+from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 

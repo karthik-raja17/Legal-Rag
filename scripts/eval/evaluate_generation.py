@@ -26,13 +26,13 @@ from vertexai.generative_models import (
     HarmCategory,
 )
 
-from src.settings import settings
+from src.config.settings import settings
 
 # ======================= CONFIGURATION =======================
 PARSER_URL = os.getenv("PARSER_URL", "https://your-parser-service-url/query")
-GOLDEN_PATH = os.getenv("GOLDEN_PATH", "golden_with_chunks_bge.jsonl")
-OUTPUT_PATH = os.getenv("OUTPUT_PATH", "generation_eval_results_prod.json")
-CACHE_PATH = os.getenv("CACHE_PATH", "eval_cache.json")
+GOLDEN_PATH = os.getenv("GOLDEN_PATH", "data/golden_with_chunks_bge.jsonl")
+OUTPUT_PATH = os.getenv("OUTPUT_PATH", "data/generation_eval_results_prod.json")
+CACHE_PATH = os.getenv("CACHE_PATH", "data/eval_cache.json")
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "5"))
 RETRY_ATTEMPTS = int(os.getenv("RETRY_ATTEMPTS", "3"))
 RETRY_DELAY = float(os.getenv("RETRY_DELAY", "5.0"))

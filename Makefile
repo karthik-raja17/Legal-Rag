@@ -11,8 +11,8 @@ SERVICE_ACCOUNT ?= legal-rag-sa@$(GCP_PROJECT_ID).iam.gserviceaccount.com
 
 # Build and push the main parser/indexer image
 build:
-	# Build the image with the latest code
-	docker build -t $(REGISTRY)/parser:latest .
+	# Build the image with the latest code (Dockerfile now in deploy/docker/)
+	docker build -f deploy/docker/Dockerfile -t $(REGISTRY)/parser:latest .
 	# Also tag it as indexer:latest for the indexer deployment
 	docker tag $(REGISTRY)/parser:latest $(REGISTRY)/indexer:latest
 	# Push both tags
@@ -21,7 +21,7 @@ build:
 
 # Build and push the BGE embedder image (custom)
 build-bge:
-	docker build -t $(REGISTRY)/bge-embedder:latest .
+	docker build -f deploy/docker/Dockerfile.bge -t $(REGISTRY)/bge-embedder:latest .
 	docker push $(REGISTRY)/bge-embedder:latest
 
 # Deploy parser service (public) – production config with rewrite enabled
@@ -102,7 +102,7 @@ deploy-indexer:
 		--image=$(REGISTRY)/indexer:latest \
 		--region=europe-west9 \
 		--command="uvicorn" \
-		--args="src.indexer_main:app,--host,0.0.0.0,--port,8080" \
+		--args="src.app.indexer_main:app,--host,0.0.0.0,--port,8080" \
 		--set-env-vars "CHROMA_COLLECTION=legal_contracts_bge" \
 		--set-env-vars "CHROMA_HOST=$(CHROMA_HOST)" \
 		--set-env-vars "CHROMA_PORT=8000" \

@@ -13,7 +13,7 @@ import re
 from typing import Dict, Any, Optional
 
 from vertexai.generative_models import GenerativeModel
-from src.settings import settings
+from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 

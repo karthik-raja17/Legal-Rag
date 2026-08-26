@@ -17,7 +17,7 @@ from tenacity import (
 )
 from requests.exceptions import RequestException, ConnectionError, Timeout
 
-from src.settings import settings
+from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 

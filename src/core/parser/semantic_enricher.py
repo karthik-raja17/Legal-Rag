@@ -27,7 +27,7 @@ try:
 except ImportError:
     VERTEX_AI_AVAILABLE = False
 
-from src.settings import settings
+from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 

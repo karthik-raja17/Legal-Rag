@@ -6,7 +6,7 @@ from google.api_core.exceptions import GoogleAPICallError, NotFound, PermissionD
 from google.cloud import firestore
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-from src.settings import settings
+from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
