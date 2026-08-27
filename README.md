@@ -157,8 +157,3 @@ make deploy-bge deploy-dedoc
 
 FastAPI, Pydantic, Vertex AI (Gemini, Embeddings, Ranker), ChromaDB HNSW, BGE, rank_bm25, PyMuPDF, Document AI, Dedoc, Firestore, GCS, Pub/Sub, Docker, Cloud Run.
 
----
-
-## License
-
-Private — not for public distribution. Contact owner for access.
