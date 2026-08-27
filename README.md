@@ -4,7 +4,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688)](https://fastapi.tiangolo.com/)
 [![Google Cloud](https://img.shields.io/badge/GCP-Vertex%20AI%20%7C%20Run%20%7C%20Firestore-4285F4)](https://cloud.google.com/)
 [![ChromaDB](https://img.shields.io/badge/ChromaDB-vector--search-orange)](https://www.trychroma.com/)
-[![License: Private](https://img.shields.io/badge/license-private-lightgrey)](#)
+
 
 Production-grade Retrieval-Augmented Generation (RAG) system for **French legal contracts** (leases, NDAs, construction agreements — *CMAD, EPC, CPE*). Parses scanned PDFs → structure-aware chunking → hybrid retrieval (dense + BM25) → Vertex AI reranking → grounded generation with citations.
 
@@ -149,7 +149,7 @@ make deploy-bge deploy-dedoc
 
 ## Data & Privacy
 
-`data/` + `*.jsonl` + `.env` + `sa-key.json` are in `.gitignore:59-78`. Contract excerpts (SIREN, addresses like *Odynéo / Magic Vati* examples) never committed. History was purged (`git init` fresh root commit `0600cbe`). Keep repo **private** if forking.
+`data/` + `*.jsonl` + `.env` + `sa-key.json` are in `.gitignore:59-78`. Contract excerpts never committed. History was purged (`git init` fresh root commit `0600cbe`). 
 
 ---
 
