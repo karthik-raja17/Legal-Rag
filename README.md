@@ -20,7 +20,7 @@ Production-grade Retrieval-Augmented Generation (RAG) system for **French legal 
 - **Vertex AI Reranker** — cross-encoder `semantic-ranker-512-004` (`reranker.py`) over top-60 candidates → top-5.
 - **Query Intelligence** — adaptive `QueryAnalyzer` (complexity → `top_k`/`expand`/`rerank`), `QueryRewriter` + `QueryExpander` (Gemini 2.5 Flash).
 - **Grounded Generation** — citation-forced prompt (strict French legal assistant), numeric fidelity, refusal for `ABSENT_DU_CONTRAT`.
-- **Ingestion at Scale** — Drive Excel → GCS staging → `pubsub/publisher.py` → indexer (`src/app/indexer_main.py` → `Indexer` + `ChromaClient` HNSW `M=128`).
+- **Ingestion at Scale** — Drive Excel → GCS staging → `pubsub/publisher.py` → indexer (`src/app/indexer_main.py` → `Indexer` + `ChromaClient` HNSW `M=24`).
 
 ---
 
