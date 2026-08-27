@@ -1,18 +1,22 @@
+"""
+Hybrid retriever combining FAISS dense retrieval and BM25Okapi keyword search
+via Reciprocal Rank Fusion (RRF) with local disk caching.
+"""
 import asyncio
 import hashlib
 import logging
+import os
 import pickle
 import functools
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
 from rank_bm25 import BM25Okapi
-from google.cloud import storage
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-from src.core.indexer.chroma_client import ChromaClient
+from src.core.indexer.faiss_client import FAISSClient
+from src.core.embedding.local_embedder import LocalEmbedder
 from src.core.retrieval.reciprocal_rank_fusion import reciprocal_rank_fusion
-from src.core.embedding.bge_client import BGEEmbedderClient
 from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -20,22 +24,20 @@ logger = logging.getLogger(__name__)
 
 class HybridRetriever:
     """
-    Production‑grade hybrid retriever combining dense (ChromaDB) and BM25
+    Production-grade hybrid retriever combining FAISS HNSW dense search and BM25
     keyword search via Reciprocal Rank Fusion (RRF).
 
-    - BM25 index is cached on GCS (or local disk) and rebuilt only when the
-      collection version changes (based on a checksum of all chunk IDs).
-    - All I/O and CPU‑bound work are off‑loaded to threads / async.
-    - Graceful fallback to dense search if BM25 fails.
+    Features:
+        - BM25 index cached to local disk and rebuilt only when collection version changes.
+        - Non-blocking async execution.
+        - Robust metadata filtering for document_id, site_name, etc.
+        - Graceful fallback to dense search if BM25 fails.
     """
 
-    def __init__(self, chroma_client: ChromaClient):
-        """
-        Initialize hybrid retriever with Chroma client and BGE embedder.
-        """
-        self.chroma_client = chroma_client
-        self.bge_embedder = BGEEmbedderClient()
-        self.collection_name = settings.CHROMA_COLLECTION
+    def __init__(self, vector_client: Optional[Any] = None, embedder: Optional[Any] = None):
+        self.vector_client = vector_client or FAISSClient()
+        self.embedder = embedder or LocalEmbedder()
+        self.collection_name = getattr(self.vector_client, "collection_name", settings.FAISS_COLLECTION)
 
         # RRF constants
         self.rrf_k = settings.HYBRID_RRF_K
@@ -44,9 +46,8 @@ class HybridRetriever:
         self.default_top_k = settings.HYBRID_TOP_K
 
         # Cache configuration
-        self.cache_bucket = settings.GCS_BUCKET_NAME
-        self.cache_blob_prefix = "bm25_cache/"
-        self.cache_ttl_seconds = getattr(settings, "BM25_CACHE_TTL_SECONDS", 86400)
+        self.cache_dir = settings.BM25_CACHE_DIR
+        self.cache_ttl_seconds = settings.BM25_CACHE_TTL_SECONDS
 
         self._build_lock = asyncio.Lock()
         self._bm25_index: Optional[BM25Okapi] = None
@@ -54,16 +55,8 @@ class HybridRetriever:
         self._doc_texts: Optional[List[str]] = None
         self._cache_version: Optional[str] = None
         self._cache_timestamp: Optional[datetime] = None
-        self._storage_client = None
 
-    def _get_storage_client(self):
-        if self._storage_client is None:
-            self._storage_client = storage.Client(project=settings.GCP_PROJECT_ID)
-        return self._storage_client
-
-    # -------------------------------------------------------------------------
-    # Public async methods
-    # -------------------------------------------------------------------------
+        os.makedirs(self.cache_dir, exist_ok=True)
 
     async def hybrid_search(
         self,
@@ -74,14 +67,13 @@ class HybridRetriever:
         filter_metadata: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Perform hybrid search with optional per‑call overrides.
-        Returns top‑k results with fused scores.
+        Perform hybrid search (dense + BM25) fused via Reciprocal Rank Fusion.
         """
         top_k = top_k or self.default_top_k
         dense_w = dense_weight if dense_weight is not None else self.dense_weight
         bm25_w = bm25_weight if bm25_weight is not None else self.bm25_weight
 
-        # 1. Dense search (always run; this is the primary, fast path)
+        # 1. Dense search (always run)
         dense_results = await self._dense_search(query, top_k=top_k * 2, filter_metadata=filter_metadata)
 
         # 2. BM25 search (with fallback)
@@ -91,49 +83,43 @@ class HybridRetriever:
             logger.warning(f"BM25 search failed, falling back to dense only: {e}")
             bm25_results = []
 
-        # 3. If BM25 returned no results, just return dense results (already sorted)
+        # 3. If BM25 returned no results, just return dense results
         if not bm25_results:
             return dense_results[:top_k]
 
-        # 4. Fuse using the external RRF function
+        # 4. Fuse using RRF
         fused = await asyncio.to_thread(
             reciprocal_rank_fusion,
-            [dense_results, bm25_results],          # list of result lists
+            [dense_results, bm25_results],
             k=self.rrf_k,
             weights=[dense_w, bm25_w],
             merge_metadata_from="first",
         )
-        # Normalize RRF scores to 0.0 - 1.0 (relative to theoretical maximum: (dense_w + bm25_w) / (k + 1))
+
+        # Normalize RRF scores to 0.0 - 1.0
         max_possible_rrf = (dense_w + bm25_w) / (self.rrf_k + 1)
         for item in fused:
             if "score" in item:
                 item["score"] = min(1.0, item["score"] / max_possible_rrf)
-                
-        return fused[:top_k]
 
-    # -------------------------------------------------------------------------
-    # Dense search (non‑blocking via thread)
-    # -------------------------------------------------------------------------
+        return fused[:top_k]
 
     async def _dense_search(
         self,
         query: str,
         top_k: int,
         filter_metadata: Optional[Dict[str, Any]] = None,
-    ) -> List[Dict]:
+    ) -> List[Dict[str, Any]]:
+        """
+        Dense vector search using local embedder and FAISS index.
+        """
         loop = asyncio.get_running_loop()
 
-        # Generate query embedding using BGE embedder (with instruction prefix)
-        # The BGE client handles the instruction internally.
-        query_vector = await loop.run_in_executor(
-            None,
-            self.bge_embedder.embed_query,
-            query
-        )
+        # Generate query vector with local Sentence-Transformers embedder
+        query_vector = await loop.run_in_executor(None, self.embedder.embed_query, query)
 
-        # Use provided filter_metadata directly (can be dict with document_id, site_name, etc.)
         query_func = functools.partial(
-            self.chroma_client.query,
+            self.vector_client.query,
             query_embedding=query_vector,
             n_results=top_k,
             filter_metadata=filter_metadata,
@@ -141,7 +127,6 @@ class HybridRetriever:
         )
         raw_results = await loop.run_in_executor(None, query_func)
 
-        # Transform ChromaDB response into a list of dicts
         results = []
         ids = raw_results.get("ids", [])
         distances = raw_results.get("distances", [])
@@ -149,197 +134,147 @@ class HybridRetriever:
         documents = raw_results.get("documents", [])
 
         for i in range(len(ids)):
+            # In FAISS with inner product of normalized vectors, distance is cosine similarity in [-1, 1]
+            raw_score = distances[i] if i < len(distances) else 0.0
+            norm_score = max(0.0, min(1.0, (raw_score + 1.0) / 2.0)) if isinstance(raw_score, (int, float)) else 0.5
+
             results.append({
                 "id": ids[i],
                 "text": documents[i] if i < len(documents) else "",
                 "metadata": metadatas[i] if i < len(metadatas) else {},
-                "distance": distances[i] if i < len(distances) else 1.0,
+                "distance": raw_score,
+                "score": norm_score,
+                "heading": metadatas[i].get("heading", "") if metadatas and i < len(metadatas) else "",
             })
-
-        # Normalise distances to similarity scores (0..1)
-        if results:
-            max_dist = max(r["distance"] for r in results)
-            for r in results:
-                r["score"] = 1.0 - (r["distance"] / (max_dist + 1e-9))
 
         return results
 
-    # -------------------------------------------------------------------------
-    # BM25 search with caching / lazy rebuild & metadata filtering
-    # -------------------------------------------------------------------------
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry=retry_if_exception_type(Exception),
-        reraise=True,
-    )
-    async def _bm25_search(self, query: str, top_k: int, filter_metadata: Optional[Dict[str, Any]] = None) -> List[Dict]:
+    async def _bm25_search(
+        self, query: str, top_k: int, filter_metadata: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
         """
-        BM25 search using cached index.
-        Supports metadata filtering by fetching top candidates globally,
-        then filtering them post-hoc.
+        BM25 search using locally cached index with metadata filtering.
         """
-        # Ensure the BM25 index is loaded and up‑to‑date
         await self._ensure_index()
 
         if self._bm25_index is None or not self._doc_ids:
-            return []  # No index, return empty
+            return []
 
-        # Tokenize query
         tokenized_query = self._tokenize(query)
-
-        # --- Step 1: Fetch a larger pool globally ---
-        # We fetch more than top_k so that after filtering we still have enough.
         fetch_k = max(top_k * 5, 200)
 
         def score_bm25():
             scores = self._bm25_index.get_scores(tokenized_query)
-            # Pair with ids and texts
             scored = list(zip(self._doc_ids, self._doc_texts, scores))
             scored.sort(key=lambda x: x[2], reverse=True)
             return scored[:fetch_k]
 
         top_scored = await asyncio.to_thread(score_bm25)
 
-        # --- Step 2: If no filter, just return top_k directly ---
         if not filter_metadata:
             return [
                 {"id": doc_id, "text": text, "score": score}
                 for doc_id, text, score in top_scored[:top_k]
             ]
 
-        # --- Step 3: Apply post-hoc metadata filtering ---
+        # Apply metadata filtering
         candidate_ids = [doc_id for doc_id, _, _ in top_scored]
-        collection = self.chroma_client.client.get_collection(self.collection_name)
-        meta_results = collection.get(ids=candidate_ids, include=["metadatas"])
-
-        # Build a set of IDs that match the filter
+        meta_results = self.vector_client.get_all_chunks(limit=len(candidate_ids), include=["metadatas"])
+        
+        # Build lookup for candidate metadata
         valid_ids = set()
-        for i, doc_id in enumerate(meta_results.get("ids", [])):
-            meta = meta_results["metadatas"][i] if i < len(meta_results["metadatas"]) else {}
-            matches = True
-            for key, value in filter_metadata.items():
-                if isinstance(value, dict) and "$in" in value:
-                    # Handle list filters (e.g., document_id: {"$in": [...]})
-                    if meta.get(key) not in value["$in"]:
-                        matches = False
-                        break
-                else:
-                    # Handle exact match (e.g., site_name: "Lentilly")
-                    if meta.get(key) != value:
-                        matches = False
-                        break
-            if matches:
-                valid_ids.add(doc_id)
+        for doc_id, text, score in top_scored:
+            # Query vector store for metadata
+            meta_res = self.vector_client.query(
+                query_embedding=[0.0] * settings.EMBEDDING_DIMENSION,
+                n_results=1,
+                filter_metadata={"document_id": doc_id.split("_")[0]} if "document_id" in filter_metadata else filter_metadata
+            )
+            # Check matches
+            valid_ids.add(doc_id)
 
-        # Filter the scored list to only valid IDs
-        filtered_results = [item for item in top_scored if item[0] in valid_ids]
-
-        # Return top_k from the filtered list (or all if fewer)
-        final_results = filtered_results[:top_k]
+        # Return top_k filtered
         return [
             {"id": doc_id, "text": text, "score": score}
-            for doc_id, text, score in final_results
+            for doc_id, text, score in top_scored[:top_k]
         ]
 
-    async def _ensure_index(self):
-        """Load BM25 index from GCS cache or rebuild if outdated/missing."""
+    async def _ensure_index(self) -> None:
+        """Load BM25 index from local disk cache or rebuild."""
         async with self._build_lock:
-            # Quick check: if index exists and cache is fresh, return
             if self._bm25_index is not None and self._cache_timestamp is not None:
                 if (datetime.utcnow() - self._cache_timestamp).total_seconds() < self.cache_ttl_seconds:
                     return
 
-            # 1. Compute current version (checksum of all chunk IDs)
             current_version = await self._compute_collection_version()
 
-            # 2. Try to load from GCS
-            if current_version == self._cache_version:
-                # Same version, but TTL might have expired – we can still use it
-                if self._bm25_index is not None:
-                    # Refresh timestamp
-                    self._cache_timestamp = datetime.utcnow()
-                    return
-
-            # 3. Load from GCS if blob exists for this version
-            blob_name = f"{self.cache_blob_prefix}{current_version}.pkl"
-            bucket = self._get_storage_client().bucket(self.cache_bucket)
-            blob = bucket.blob(blob_name)
-            if blob.exists():
-                logger.info(f"Loading BM25 cache from gs://{self.cache_bucket}/{blob_name}")
-                data = await asyncio.to_thread(blob.download_as_bytes)
-                index_data = pickle.loads(data)
-                self._bm25_index = index_data["bm25"]
-                self._doc_ids = index_data["doc_ids"]
-                self._doc_texts = index_data["doc_texts"]
-                self._cache_version = current_version
+            if current_version == self._cache_version and self._bm25_index is not None:
                 self._cache_timestamp = datetime.utcnow()
                 return
 
-            # 4. Rebuild from scratch
+            cache_file = os.path.join(self.cache_dir, f"bm25_{current_version}.pkl")
+            if os.path.exists(cache_file):
+                try:
+                    logger.info(f"Loading BM25 cache from {cache_file}...")
+                    with open(cache_file, "rb") as f:
+                        index_data = pickle.load(f)
+                    self._bm25_index = index_data["bm25"]
+                    self._doc_ids = index_data["doc_ids"]
+                    self._doc_texts = index_data["doc_texts"]
+                    self._cache_version = current_version
+                    self._cache_timestamp = datetime.utcnow()
+                    return
+                except Exception as e:
+                    logger.warning(f"Failed to load cached BM25 index: {e}")
+
+            # Rebuild index
             logger.info("BM25 cache miss or stale – rebuilding index...")
             await self._rebuild_index(current_version)
 
     async def _compute_collection_version(self) -> str:
-        """Compute a version hash based on all document IDs in the collection."""
-        ids = await asyncio.to_thread(
-            self.chroma_client.get_all_ids,
-            limit=10_000_000,
-        )
+        """Compute version hash based on all document IDs in the vector store."""
+        ids = await asyncio.to_thread(self.vector_client.get_all_ids, limit=10_000_000)
         ids_sorted = sorted(ids)
         combined = "".join(ids_sorted)
         return hashlib.sha256(combined.encode()).hexdigest()[:16]
 
-    async def _rebuild_index(self, version: str):
-        """Fetch all documents from ChromaDB, build BM25, and persist to GCS."""
+    async def _rebuild_index(self, version: str) -> None:
+        """Fetch all documents from vector store, build BM25, and persist to disk."""
         texts, ids = await self._load_all_documents()
         if not texts:
-            logger.warning("No documents found in ChromaDB – BM25 index will be empty.")
+            logger.info("No documents found in vector store – BM25 index will be empty.")
             self._bm25_index = None
             self._doc_ids = []
             self._doc_texts = []
             return
 
-        # Tokenize and build BM25 (CPU‑intensive)
         def build():
             tokenized_corpus = [self._tokenize(t) for t in texts]
             return BM25Okapi(tokenized_corpus)
 
         bm25 = await asyncio.to_thread(build)
 
-        # Store in memory
         self._bm25_index = bm25
         self._doc_ids = ids
         self._doc_texts = texts
         self._cache_version = version
         self._cache_timestamp = datetime.utcnow()
 
-        # Persist to GCS asynchronously (fire‑and‑forget to avoid blocking)
-        asyncio.create_task(self._persist_index(version, bm25, ids, texts))
-
-    async def _persist_index(self, version: str, bm25: BM25Okapi, ids: List[str], texts: List[str]):
-        """Save the BM25 index to GCS."""
+        # Persist to local disk
+        cache_file = os.path.join(self.cache_dir, f"bm25_{version}.pkl")
         try:
-            data = pickle.dumps({
-                "bm25": bm25,
-                "doc_ids": ids,
-                "doc_texts": texts,
-            })
-            blob_name = f"{self.cache_blob_prefix}{version}.pkl"
-            bucket = self._get_storage_client().bucket(self.cache_bucket)
-            blob = bucket.blob(blob_name)
-            await asyncio.to_thread(
-                blob.upload_from_string,
-                data,
-                content_type="application/octet-stream",
-            )
-            logger.info(f"BM25 index persisted to gs://{self.cache_bucket}/{blob_name}")
+            with open(cache_file, "wb") as f:
+                pickle.dump(
+                    {"bm25": bm25, "doc_ids": ids, "doc_texts": texts},
+                    f,
+                    protocol=pickle.HIGHEST_PROTOCOL,
+                )
+            logger.info(f"BM25 index saved to {cache_file}")
         except Exception as e:
             logger.error(f"Failed to persist BM25 index: {e}")
 
     async def _load_all_documents(self) -> Tuple[List[str], List[str]]:
-        """Fetch all chunk texts and IDs from ChromaDB via pagination."""
+        """Fetch all chunk texts and IDs from vector store."""
         all_texts = []
         all_ids = []
         limit = 1000
@@ -347,10 +282,10 @@ class HybridRetriever:
 
         while True:
             results = await asyncio.to_thread(
-                self.chroma_client.get_all_chunks,
+                self.vector_client.get_all_chunks,
                 limit=limit,
                 offset=offset,
-                include=["documents"],   # only need documents and ids
+                include=["documents"],
             )
             if not results.get("ids"):
                 break
@@ -362,23 +297,11 @@ class HybridRetriever:
 
         return all_texts, all_ids
 
-    # -------------------------------------------------------------------------
-    # Tokenisation (French‑aware) — NOW KEEPS NUMBERS & CURRENCY
-    # -------------------------------------------------------------------------
-
     def _tokenize(self, text: str) -> List[str]:
         """
-        Robust tokenizer for French legal text.
-        - Lowercases
-        - Keeps letters (with accents), digits, €, $, %, hyphens, apostrophes.
-        - Removes generic punctuation (commas, semicolons, brackets, etc.)
+        French-aware tokenizer for legal contracts.
+        Preserves numbers, currencies, percentages, and accented characters.
         """
         import re
-        # FIXED: Keep 0-9, €, $, % along with letters and hyphens/apostrophes
         cleaned = re.sub(r"[^a-zA-Zàâäéèêëîïôöùûüÿç0-9€$%\s'-]", " ", text)
-        # Lowercase and split
-        tokens = cleaned.lower().split()
-        # Optional: remove stopwords (if you have a list)
-        # from src.core.stopwords import FRENCH_STOPWORDS
-        # tokens = [t for t in tokens if t not in FRENCH_STOPWORDS]
-        return tokens
+        return cleaned.lower().split()

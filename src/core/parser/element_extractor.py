@@ -415,8 +415,6 @@ class ElementExtractor:
     def _extract_figures(self, pdf_content: bytes, layer1_result: Optional[Dict]) -> List[Dict]:
         """
         Extract figures/graphs. Placeholder – can be extended with:
-        - Unstructured.io (via partition_pdf)
-        - Google Vision API
         - Custom image detection using OpenCV/Pillow
         """
         # This is a stub – you can integrate a vision model here.

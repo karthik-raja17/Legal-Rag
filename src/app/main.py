@@ -1,23 +1,19 @@
 """
-FastAPI entrypoint for the Legal RAG Parser – production‑grade.
+FastAPI entrypoint for the Local Legal RAG Engine.
 
 Exposes:
-- /parse      : async upload + processing (Pub/Sub + GCS)
-- /parse_from_gcs : parse a PDF already in GCS
-- /status     : check indexing progress
-- /query      : RAG question answering
-- /health     : liveness + readiness probe
-- /api/chat   : frontend proxy endpoint
-- /           : frontend UI
-- /dropdown-options : list of distinct site_names and document_ids for dropdowns
-- /api/dropdown-options : same as above (for frontend)
-- /api/documents/count : total number of unique documents
+- /parse               : upload PDF, parse, and index directly into FAISS
+- /status              : check document status
+- /query               : local hybrid RAG question answering with Ollama & citations
+- /health              : local health probe (FAISS & Ollama)
+- /dropdown-options    : list distinct sites and documents for UI
+- /api/chat            : frontend chat proxy
+- /api/documents/count : total unique indexed documents
+- /                    : web UI
 """
 import asyncio
 import logging
 import os
-import tempfile
-import functools
 import uuid
 from contextvars import ContextVar
 from typing import Optional, List, Dict, Any
@@ -25,42 +21,35 @@ from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query, Request, Body
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from google.cloud import firestore
-from vertexai.generative_models import GenerativeModel
 
-from src.core.indexer.chroma_client import ChromaClient
-from src.core.parser.pdf_parser import PDFParser
-from src.core.storage.gcs import GCSClient
-from src.core.pubsub.publisher import Publisher
 from src.config.settings import settings
+from src.core.indexer.faiss_client import FAISSClient
+from src.core.indexer.indexer import Indexer
+from src.core.embedding.local_embedder import LocalEmbedder
+from src.core.llm.ollama_client import OllamaClient
+from src.core.storage.local_storage import LocalStorageClient
+from src.core.parser.pdf_parser import PDFParser
 from src.core.retrieval.hybrid_retriever import HybridRetriever
-from src.core.retrieval.reranker import VertexReranker
+from src.core.retrieval.reranker import LocalReranker
 from src.core.retrieval.query_expander import QueryExpander
-from src.core.retrieval.reciprocal_rank_fusion import reciprocal_rank_fusion
 from src.core.retrieval.query_analyzer import QueryAnalyzer
 from src.core.retrieval.query_rewriter import QueryRewriter
-from src.core.embedding.bge_client import BGEEmbedderClient
-
-
-class PublicBGEEmbedderClient(BGEEmbedderClient):
-    def _get_headers(self) -> dict:
-        return {"Content-Type": "application/json"}
-
+from src.core.retrieval.reciprocal_rank_fusion import reciprocal_rank_fusion
 
 # ----------------------------------------------------------------------------
-# Logging with Request‑ID Context
+# Logging with Request-ID Context
 # ----------------------------------------------------------------------------
 _request_id_ctx: ContextVar[str] = ContextVar("request_id", default="unknown")
-
 old_factory = logging.getLogRecordFactory()
+
 
 def record_factory(*args, **kwargs):
     record = old_factory(*args, **kwargs)
     record.request_id = _request_id_ctx.get()
     return record
 
-logging.setLogRecordFactory(record_factory)
 
+logging.setLogRecordFactory(record_factory)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s request_id=%(request_id)s %(message)s",
@@ -71,14 +60,12 @@ logger = logging.getLogger(__name__)
 # FastAPI App
 # ----------------------------------------------------------------------------
 app = FastAPI(
-    title="Legal RAG Parser",
-    description="Parses French legal contracts with OCR, structure, tables, and NLP.",
-    version="2.0.0",
+    title="Legal RAG Engine (Local)",
+    description="Local French legal contract RAG engine with FAISS, all-MiniLM-L6-v2, and Ollama.",
+    version="3.0.0",
 )
 
-# ----------------------------------------------------------------------------
-# Middleware – Request‑ID
-# ----------------------------------------------------------------------------
+
 @app.middleware("http")
 async def add_request_id(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
@@ -90,193 +77,110 @@ async def add_request_id(request: Request, call_next):
     finally:
         _request_id_ctx.reset(token)
 
+
 # ----------------------------------------------------------------------------
 # Lazy Singletons
 # ----------------------------------------------------------------------------
-_parser: Optional[PDFParser] = None
-_gcs_client: Optional[GCSClient] = None
-_publisher: Optional[Publisher] = None
-_firestore_client: Optional[firestore.Client] = None
-_chroma_client: Optional[ChromaClient] = None
+_faiss_client: Optional[FAISSClient] = None
+_embedder: Optional[LocalEmbedder] = None
+_ollama_client: Optional[OllamaClient] = None
+_local_storage: Optional[LocalStorageClient] = None
+_indexer: Optional[Indexer] = None
 _hybrid_retriever: Optional[HybridRetriever] = None
-_reranker: Optional[VertexReranker] = None
+_rewriter: Optional[QueryRewriter] = None
 _query_expander: Optional[QueryExpander] = None
 _query_analyzer: Optional[QueryAnalyzer] = None
-_bge_client: Optional[BGEEmbedderClient] = None
-_rewriter: Optional[QueryRewriter] = None
+_reranker: Optional[LocalReranker] = None
+_parser: Optional[PDFParser] = None
 
 
-def get_bge_client() -> BGEEmbedderClient:
-    global _bge_client
-    if _bge_client is None:
-        try:
-            _bge_client = BGEEmbedderClient()
-            logger.info("BGE embedder client initialized.")
-        except Exception as e:
-            logger.error(f"BGE client init failed: {e}", exc_info=True)
-            raise HTTPException(503, "BGE embedder unavailable")
-    return _bge_client
+def get_faiss_client() -> FAISSClient:
+    global _faiss_client
+    if _faiss_client is None:
+        _faiss_client = FAISSClient()
+    return _faiss_client
+
+
+def get_embedder() -> LocalEmbedder:
+    global _embedder
+    if _embedder is None:
+        _embedder = LocalEmbedder()
+    return _embedder
+
+
+def get_ollama_client() -> OllamaClient:
+    global _ollama_client
+    if _ollama_client is None:
+        _ollama_client = OllamaClient()
+    return _ollama_client
+
+
+def get_local_storage() -> LocalStorageClient:
+    global _local_storage
+    if _local_storage is None:
+        _local_storage = LocalStorageClient()
+    return _local_storage
+
+
+def get_indexer() -> Indexer:
+    global _indexer
+    if _indexer is None:
+        _indexer = Indexer(vector_client=get_faiss_client(), embedder=get_embedder())
+    return _indexer
+
+
+def get_hybrid_retriever() -> HybridRetriever:
+    global _hybrid_retriever
+    if _hybrid_retriever is None:
+        _hybrid_retriever = HybridRetriever(
+            vector_client=get_faiss_client(),
+            embedder=get_embedder(),
+        )
+    return _hybrid_retriever
 
 
 def get_rewriter() -> QueryRewriter:
-    """Lazy singleton for query rewriter."""
     global _rewriter
     if _rewriter is None:
-        try:
-            _rewriter = QueryRewriter()
-            logger.info("QueryRewriter initialized.")
-        except Exception as e:
-            logger.error(f"QueryRewriter init failed: {e}", exc_info=True)
-            _rewriter = None
+        _rewriter = QueryRewriter(ollama_client=get_ollama_client())
     return _rewriter
 
 
 def get_query_expander() -> QueryExpander:
     global _query_expander
     if _query_expander is None:
-        try:
-            _query_expander = QueryExpander()
-            logger.info("QueryExpander initialized.")
-        except Exception as e:
-            logger.error(f"QueryExpander init failed: {e}", exc_info=True)
-            raise HTTPException(503, "Query expansion service unavailable")
+        _query_expander = QueryExpander(ollama_client=get_ollama_client())
     return _query_expander
 
 
-def get_hybrid_retriever() -> HybridRetriever:
-    global _hybrid_retriever
-    if _hybrid_retriever is None:
-        try:
-            chroma_client = get_chroma_client()
-            _hybrid_retriever = HybridRetriever(chroma_client)
-            logger.info("HybridRetriever initialized.")
-        except Exception as e:
-            logger.error(f"HybridRetriever init failed: {e}", exc_info=True)
-            raise HTTPException(503, "Hybrid search service unavailable")
-    return _hybrid_retriever
+def get_query_analyzer() -> QueryAnalyzer:
+    global _query_analyzer
+    if _query_analyzer is None:
+        _query_analyzer = QueryAnalyzer(ollama_client=get_ollama_client())
+    return _query_analyzer
+
+
+def get_reranker() -> LocalReranker:
+    global _reranker
+    if _reranker is None:
+        _reranker = LocalReranker()
+    return _reranker
 
 
 def get_parser() -> PDFParser:
     global _parser
     if _parser is None:
-        try:
-            _parser = PDFParser(
-                use_ocr=True,
-                use_dedoc=True,
-                extract_tables=True,
-                extract_figures=False,
-                semantic_enrichment=True,
-                language="fr",
-                cache_dir=settings.PARSER_CACHE_DIR or None,
-                dedoc_url=settings.DEDOC_SERVICE_URL,
-            )
-            logger.info("PDFParser initialized.")
-        except Exception as e:
-            logger.error(f"PDFParser init failed: {e}", exc_info=True)
-            raise HTTPException(503, "Parser unavailable")
+        _parser = PDFParser(
+            use_ocr=False,  # default to digital extraction locally; fallback available
+            use_dedoc=bool(settings.DEDOC_SERVICE_URL),
+            extract_tables=True,
+            extract_figures=False,
+            semantic_enrichment=True,
+            language="fr",
+            cache_dir=settings.PARSER_CACHE_DIR,
+            dedoc_url=settings.DEDOC_SERVICE_URL,
+        )
     return _parser
-
-
-def get_gcs_client() -> GCSClient:
-    global _gcs_client
-    if _gcs_client is None:
-        try:
-            _gcs_client = GCSClient()
-            logger.info("GCS client initialized.")
-        except Exception as e:
-            logger.error(f"GCS client init failed: {e}", exc_info=True)
-            raise HTTPException(503, "Storage service unavailable")
-    return _gcs_client
-
-
-def get_publisher() -> Publisher:
-    global _publisher
-    if _publisher is None:
-        try:
-            _publisher = Publisher()
-            logger.info("Pub/Sub publisher initialized.")
-        except Exception as e:
-            logger.error(f"Pub/Sub init failed: {e}", exc_info=True)
-            raise HTTPException(503, "Messaging service unavailable")
-    return _publisher
-
-
-def get_firestore_client() -> firestore.Client:
-    global _firestore_client
-    if _firestore_client is None:
-        try:
-            _firestore_client = firestore.Client(project=settings.GCP_PROJECT_ID)
-            logger.info("Firestore client initialized.")
-        except Exception as e:
-            logger.error(f"Firestore init failed: {e}", exc_info=True)
-            raise HTTPException(503, "Database service unavailable")
-    return _firestore_client
-
-
-def get_chroma_client() -> ChromaClient:
-    global _chroma_client
-    if _chroma_client is None:
-        try:
-            _chroma_client = ChromaClient()
-            logger.info("ChromaDB client initialized.")
-        except Exception as e:
-            logger.error(f"ChromaDB init failed: {e}", exc_info=True)
-            raise HTTPException(503, "Vector database unavailable")
-    return _chroma_client
-
-
-def get_reranker() -> VertexReranker:
-    global _reranker
-    if _reranker is None:
-        try:
-            _reranker = VertexReranker()
-            logger.info("VertexReranker initialized.")
-        except Exception as e:
-            logger.error(f"VertexReranker init failed: {e}", exc_info=True)
-            raise HTTPException(503, "Reranker service unavailable")
-    return _reranker
-
-
-# ----------------------------------------------------------------------------
-# Core Parse Logic (shared between /parse and /parse_from_gcs)
-# ----------------------------------------------------------------------------
-async def parse_document_from_bytes(content: bytes, document_id: str, sync: bool = False) -> JSONResponse:
-    """
-    Core parsing logic – offloaded to a thread to avoid blocking the event loop.
-    """
-    try:
-        parsed_result = await asyncio.to_thread(get_parser().parse, content, document_id)
-    except Exception as e:
-        logger.error(f"Parsing failed for {document_id}: {e}", exc_info=True)
-        raise HTTPException(500, f"Parsing error: {str(e)}")
-
-    if sync:
-        return JSONResponse(content=parsed_result.to_dict())
-
-    try:
-        gcs = get_gcs_client()
-        blob_name = f"parsed/{document_id}.json"
-        gcs_uri = gcs.upload_json(parsed_result.to_dict(), blob_name)
-        logger.info(f"Stored parsed JSON at {gcs_uri}")
-    except Exception as e:
-        logger.error(f"GCS upload failed for {document_id}: {e}", exc_info=True)
-        raise HTTPException(503, f"Storage error: {str(e)}")
-
-    try:
-        pub = get_publisher()
-        msg_id = pub.publish(document_id, gcs_uri)
-        logger.info(f"Published message {msg_id} for {document_id}")
-    except Exception as e:
-        logger.error(f"Pub/Sub publish failed for {document_id}: {e}", exc_info=True)
-        raise HTTPException(503, f"Messaging error: {str(e)}")
-
-    return {
-        "document_id": document_id,
-        "status": "accepted",
-        "gcs_uri": gcs_uri,
-        "pubsub_message_id": msg_id,
-        "message": "Document accepted for processing. Use /status to check indexing progress."
-    }
 
 
 # ----------------------------------------------------------------------------
@@ -284,36 +188,38 @@ async def parse_document_from_bytes(content: bytes, document_id: str, sync: bool
 # ----------------------------------------------------------------------------
 @app.get("/health")
 async def health_check():
-    status = {"status": "healthy", "project": settings.GCP_PROJECT_ID, "checks": {}}
+    status = {"status": "healthy", "checks": {}}
     all_ok = True
 
+    # 1. FAISS check
     try:
-        db = get_firestore_client()
-        db.collection(settings.FIRESTORE_COLLECTION).document("_health_check").get(timeout=5)
-        status["checks"]["firestore"] = "ok"
+        faiss_ok = get_faiss_client().health_check()
+        status["checks"]["faiss"] = "ok" if faiss_ok else "uninitialized"
+        if not faiss_ok:
+            all_ok = False
     except Exception as e:
-        status["checks"]["firestore"] = f"error: {str(e)}"
+        status["checks"]["faiss"] = f"error: {str(e)}"
         all_ok = False
 
+    # 2. Ollama check
     try:
-        gcs = get_gcs_client()
-        gcs.bucket.exists(timeout=5)
-        status["checks"]["gcs"] = "ok"
+        ollama_ok = get_ollama_client().health_check()
+        status["checks"]["ollama"] = "ok" if ollama_ok else "unreachable (check 'ollama serve')"
+        if not ollama_ok:
+            status["checks"]["ollama_hint"] = f"Ensure Ollama is running on {settings.OLLAMA_BASE_URL}"
     except Exception as e:
-        status["checks"]["gcs"] = f"error: {str(e)}"
-        all_ok = False
+        status["checks"]["ollama"] = f"error: {str(e)}"
 
+    # 3. Local Storage check
     try:
-        chroma = get_chroma_client()
-        chroma.client.heartbeat()
-        status["checks"]["chromadb"] = "ok"
+        storage = get_local_storage()
+        status["checks"]["local_storage"] = "ok"
     except Exception as e:
-        status["checks"]["chromadb"] = f"error: {str(e)}"
+        status["checks"]["local_storage"] = f"error: {str(e)}"
         all_ok = False
 
     if not all_ok:
         status["status"] = "degraded"
-        raise HTTPException(status_code=503, detail=status)
     return status
 
 
@@ -322,19 +228,11 @@ async def health_check():
 # ----------------------------------------------------------------------------
 @app.get("/status")
 async def get_status(document_id: str = Query(..., description="Document ID to check")):
-    try:
-        db = get_firestore_client()
-        doc_ref = db.collection(settings.FIRESTORE_COLLECTION).document(document_id)
-        doc = doc_ref.get(timeout=10)
-        if doc.exists:
-            return doc.to_dict()
-        else:
-            raise HTTPException(404, f"Document {document_id} not found in status index.")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Firestore read failed for {document_id}: {e}", exc_info=True)
-        raise HTTPException(503, f"Database error: {str(e)}")
+    storage = get_local_storage()
+    doc_status = storage.get_status(document_id)
+    if not doc_status:
+        raise HTTPException(404, f"Document {document_id} not found.")
+    return doc_status
 
 
 # ----------------------------------------------------------------------------
@@ -344,32 +242,34 @@ async def get_status(document_id: str = Query(..., description="Document ID to c
 @app.get("/api/dropdown-options")
 async def get_dropdown_options():
     """
-    Return distinct site_names and document_ids for frontend dropdowns.
+    Return distinct site_names and document_ids from FAISS metadata for frontend dropdowns.
     """
     try:
-        chroma = get_chroma_client()
-        collection = chroma.client.get_collection(settings.CHROMA_COLLECTION)
-        results = collection.get(include=["metadatas"], limit=100000)
+        faiss_client = get_faiss_client()
+        chunks = faiss_client.get_all_chunks(limit=100000, include=["metadatas"])
+        metadatas = chunks.get("metadatas", [])
+
         sites = set()
         documents = {}
-        for meta in results.get("metadatas", []):
+        for meta in metadatas:
             doc_id = meta.get("document_id")
             site = meta.get("site_name")
             if doc_id:
                 documents[doc_id] = {
                     "id": doc_id,
                     "label": doc_id,
-                    "site_name": site or "Unknown"
+                    "site_name": site or "Unknown",
                 }
             if site and site not in ["SITE_NON_TROUVE", "unknown"]:
                 sites.add(site)
+
         return {
             "sites": sorted(list(sites)),
-            "documents": sorted(list(documents.values()), key=lambda x: x["label"])
+            "documents": sorted(list(documents.values()), key=lambda x: x["label"]),
         }
     except Exception as e:
         logger.error(f"Failed to fetch dropdown options: {e}")
-        raise HTTPException(500, "Could not fetch dropdown options")
+        return {"sites": [], "documents": []}
 
 
 # ----------------------------------------------------------------------------
@@ -377,140 +277,84 @@ async def get_dropdown_options():
 # ----------------------------------------------------------------------------
 @app.get("/api/documents/count")
 async def get_documents_count():
-    """
-    Return the total number of unique documents in the collection.
-    """
+    """Return the total number of unique documents indexed."""
     try:
-        chroma = get_chroma_client()
-        collection = chroma.client.get_collection(settings.CHROMA_COLLECTION)
-        results = collection.get(include=["metadatas"], limit=100000)
-        doc_ids = set()
-        for meta in results.get("metadatas", []):
-            doc_id = meta.get("document_id")
-            if doc_id:
-                doc_ids.add(doc_id)
+        faiss_client = get_faiss_client()
+        chunks = faiss_client.get_all_chunks(limit=100000, include=["metadatas"])
+        doc_ids = {meta.get("document_id") for meta in chunks.get("metadatas", []) if meta.get("document_id")}
         return {"count": len(doc_ids)}
     except Exception as e:
-        logger.error(f"Failed to fetch document count: {e}")
-        raise HTTPException(500, "Could not fetch document count")
+        logger.error(f"Failed to count documents: {e}")
+        return {"count": 0}
 
 
 # ----------------------------------------------------------------------------
-# Parse Endpoint – Upload PDF
+# Parse Endpoint – Upload PDF and Index Directly
 # ----------------------------------------------------------------------------
-@app.post("/parse", status_code=202)
+@app.post("/parse")
 async def parse_document(
     file: UploadFile = File(...),
-    document_id: Optional[str] = Form("unknown"),
-    sync: bool = Query(False, description="If true, return JSON immediately (synchronous)."),
+    document_id: Optional[str] = Form(None),
+    site_name: Optional[str] = Form(None),
+    sync: bool = Query(False, description="If true, return full parsed JSON immediately."),
 ):
-    if not file.filename.endswith(".pdf"):
+    if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "Only PDF files are supported")
+
+    doc_id = document_id or os.path.splitext(file.filename)[0]
 
     try:
         content = await file.read()
     except Exception as e:
-        logger.error(f"Failed to read uploaded file: {e}", exc_info=True)
-        raise HTTPException(400, "Could not read file")
+        logger.error(f"Failed to read file {file.filename}: {e}")
+        raise HTTPException(400, "Could not read uploaded file")
 
-    if len(content) > 20 * 1024 * 1024:
-        raise HTTPException(413, "File too large (max 20 MB)")
-
-    result = await parse_document_from_bytes(content, document_id, sync)
-    return result
-
-
-# ----------------------------------------------------------------------------
-# Parse Endpoint – PDF from GCS
-# ----------------------------------------------------------------------------
-@app.post("/parse_from_gcs", status_code=202)
-async def parse_from_gcs(
-    document_id: str = Form(...),
-    gcs_uri: str = Form(...),
-    sync: bool = Query(False),
-):
-    if not gcs_uri.startswith("gs://"):
-        raise HTTPException(400, "Invalid GCS URI")
-
-    gcs = get_gcs_client()
-    tmp_path = None
+    storage = get_local_storage()
+    storage.save_pdf(doc_id, content)
+    storage.update_status(doc_id, "parsing", "Parsing PDF structure...")
 
     try:
-        blob_name = gcs_uri.replace(f"gs://{gcs.bucket_name}/", "")
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            blob = gcs.bucket.blob(blob_name)
-            blob.download_to_filename(tmp.name, timeout=60)
-            tmp_path = tmp.name
-
-        with open(tmp_path, "rb") as f:
-            content = f.read()
-
-        return await parse_document_from_bytes(content, document_id, sync)
-
+        parser = get_parser()
+        parsed_doc = await asyncio.to_thread(parser.parse, content, doc_id)
+        storage.save_parsed_json(doc_id, parsed_doc.to_dict())
     except Exception as e:
-        logger.error(f"Failed to read GCS file {gcs_uri}: {e}", exc_info=True)
-        raise HTTPException(500, f"Failed to read GCS file: {str(e)}")
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        logger.error(f"Parsing failed for {doc_id}: {e}", exc_info=True)
+        storage.update_status(doc_id, "failed", f"Parsing error: {str(e)}")
+        raise HTTPException(500, f"Parsing error: {str(e)}")
+
+    if sync:
+        return JSONResponse(content=parsed_doc.to_dict())
+
+    # Index directly into FAISS
+    storage.update_status(doc_id, "indexing", "Indexing chunks into FAISS...")
+    try:
+        indexer = get_indexer()
+        chunk_count = await asyncio.to_thread(indexer.index_document, parsed_doc, doc_id, site_name)
+        storage.update_status(doc_id, "indexed", "Successfully indexed into FAISS", chunk_count=chunk_count)
+    except Exception as e:
+        logger.error(f"Indexing failed for {doc_id}: {e}", exc_info=True)
+        storage.update_status(doc_id, "failed", f"Indexing error: {str(e)}")
+        raise HTTPException(500, f"Indexing error: {str(e)}")
+
+    return {
+        "document_id": doc_id,
+        "status": "indexed",
+        "chunk_count": chunk_count,
+        "message": f"Successfully parsed and indexed {chunk_count} chunks into FAISS.",
+    }
 
 
 # ----------------------------------------------------------------------------
-# Dense Search Helper (pure dense retrieval using BGE)
+# Local Context Window Expansion
 # ----------------------------------------------------------------------------
-async def dense_search(
-    query: str,
-    top_k: int,
-    filter_metadata: Optional[Dict[str, Any]] = None
-) -> List[Dict[str, Any]]:
-    """
-    Pure dense retrieval via ChromaDB using BGE embeddings.
-    """
-    loop = asyncio.get_running_loop()
-    bge_client = get_bge_client()
-    query_vector = await loop.run_in_executor(None, bge_client.embed_query, query)
-
-    chroma = get_chroma_client()
-    collection = chroma.client.get_collection(settings.CHROMA_COLLECTION)
-
-    where_filter = filter_metadata if filter_metadata else None
-
-    query_func = functools.partial(
-        collection.query,
-        query_embeddings=[query_vector],
-        n_results=top_k,
-        where=where_filter,
-        include=["metadatas", "distances", "documents"],
-    )
-    raw_results = await loop.run_in_executor(None, query_func)
-
-    candidates = []
-    ids = raw_results.get("ids", [[]])[0]
-    distances = raw_results.get("distances", [[]])[0]
-    metadatas = raw_results.get("metadatas", [[]])[0]
-    documents = raw_results.get("documents", [[]])[0]
-
-    for i in range(len(ids)):
-        candidates.append({
-            "id": ids[i],
-            "text": documents[i] if i < len(documents) else "",
-            "metadata": metadatas[i] if i < len(metadatas) else {},
-            "distance": distances[i] if i < len(distances) else 1.0,
-            "heading": metadatas[i].get("heading", "") if metadatas and i < len(metadatas) else "",
-            "score": distances[i],
-        })
-    return candidates
-
-
 async def expand_with_local_context(
-    chroma_client: ChromaClient,
+    faiss_client: FAISSClient,
     final_chunks: List[Dict[str, Any]],
     top_k: int,
-    window_size: int = 2
+    window_size: int = 2,
 ) -> List[Dict[str, Any]]:
     expanded = []
     seen_families = set()
-    collection = chroma_client.client.get_collection(settings.CHROMA_COLLECTION)
 
     for chunk in final_chunks:
         metadata = chunk.get("metadata", {})
@@ -527,19 +371,19 @@ async def expand_with_local_context(
             start = max(1, part_num - window_size)
             end = part_num + window_size
 
-            results = collection.get(
-                where={
-                    "parent_section_id": parent_id,
-                    "part_number": {"$gte": start, "$lte": end}
-                },
-                include=["documents", "metadatas"]
-            )
+            # Fetch matching siblings from FAISS
+            all_chunks = faiss_client.get_all_chunks(limit=10000, include=["documents", "metadatas"])
+            siblings = []
+            for cid, doc, meta in zip(
+                all_chunks.get("ids", []),
+                all_chunks.get("documents", []),
+                all_chunks.get("metadatas", []),
+            ):
+                if meta.get("parent_section_id") == parent_id and start <= meta.get("part_number", 0) <= end:
+                    siblings.append((cid, doc, meta))
 
-            if results.get("ids"):
-                siblings = sorted(
-                    zip(results["ids"], results["documents"], results["metadatas"]),
-                    key=lambda x: x[2].get("part_number", 0)
-                )
+            if siblings:
+                siblings.sort(key=lambda x: x[2].get("part_number", 0))
                 combined_text = "\n\n".join([doc for _, doc, _ in siblings])
                 merged_metadata = siblings[0][2]
 
@@ -548,7 +392,7 @@ async def expand_with_local_context(
                     "text": combined_text,
                     "metadata": merged_metadata,
                     "score": chunk.get("score", 1.0),
-                    "context_window": f"{start}-{end}"
+                    "context_window": f"{start}-{end}",
                 })
                 continue
 
@@ -558,7 +402,7 @@ async def expand_with_local_context(
 
 
 # ----------------------------------------------------------------------------
-# Query Endpoint – RAG
+# Query Endpoint – Local RAG
 # ----------------------------------------------------------------------------
 @app.post("/query")
 async def query_documents(
@@ -575,7 +419,7 @@ async def query_documents(
     auto_optimize: bool = Body(True),
 ):
     try:
-        # ---- Build filter_metadata ----
+        # 1. Build metadata filter
         filter_metadata = {}
         if document_ids:
             filter_metadata["document_id"] = {"$in": document_ids}
@@ -583,89 +427,71 @@ async def query_documents(
             filter_metadata["document_id"] = document_id
         elif site_name:
             filter_metadata["site_name"] = site_name
-        # else: no filter (global search)
 
-        # ---- Query Rewriting (if enabled) ----
+        # 2. Query Rewriting (via Ollama)
+        retrieval_query = query
         if settings.ENABLE_QUERY_REWRITING and rewrite:
             rewriter = get_rewriter()
-            if rewriter:
-                retrieval_query = await rewriter.rewrite(query)
-                logger.info(f"Original query: '{query}' -> rewritten: '{retrieval_query}'")
-            else:
-                retrieval_query = query
-                logger.warning("QueryRewriter unavailable, using original query.")
-        else:
-            retrieval_query = query
+            retrieval_query = await rewriter.rewrite(query)
 
-        # ---- Query analysis (auto_optimize) ----
+        # 3. Query analysis (auto_optimize)
         if auto_optimize:
-            analyzer = QueryAnalyzer()
+            analyzer = get_query_analyzer()
             analysis = analyzer.analyze(retrieval_query)
-            logger.info(f"Query analysis: {analysis}")
             if top_k is None:
-                top_k = analysis["suggested_top_k"]
+                top_k = analysis.get("suggested_top_k", 5)
             if expand is None:
-                expand = analysis["suggested_expand"]
+                expand = analysis.get("suggested_expand", False)
             if rerank is None:
-                rerank = analysis["suggested_rerank"]
+                rerank = analysis.get("suggested_rerank", False)
         else:
-            if top_k is None:
-                top_k = 5
-            if expand is None:
-                expand = False
-            if rerank is None:
-                rerank = True
+            top_k = top_k or 5
+            expand = expand or False
+            rerank = rerank or False
 
-        candidate_k = settings.VERTEX_RERANKER_CANDIDATE_K if rerank else top_k
+        candidate_k = max(top_k * 2, 10)
 
-        # ---- Query expansion (if enabled) ----
+        # 4. Query expansion
         queries_to_search = [retrieval_query]
         if expand:
             expander = get_query_expander()
-            expanded = await expander.expand(retrieval_query)
-            if expanded and len(expanded) > 1:
-                queries_to_search = expanded
-                logger.info(f"Expanded query into {len(queries_to_search)} variants")
+            expanded_queries = await expander.expand(retrieval_query)
+            if expanded_queries and len(expanded_queries) > 1:
+                queries_to_search = expanded_queries
 
-        # ---- Retrieve for each variant ----
+        # 5. Retrieval for each query variant
         all_result_sets = []
+        retriever = get_hybrid_retriever()
         for q in queries_to_search:
             if hybrid:
-                retriever = get_hybrid_retriever()
                 results = await retriever.hybrid_search(q, top_k=candidate_k, filter_metadata=filter_metadata)
             else:
-                results = await dense_search(q, candidate_k, filter_metadata=filter_metadata)
+                results = await retriever._dense_search(q, top_k=candidate_k, filter_metadata=filter_metadata)
             all_result_sets.append(results)
 
-        # ---- Fuse variants ----
-        if len(queries_to_search) > 1:
+        # 6. Fuse variants via RRF if multiple
+        if len(all_result_sets) > 1:
             fused_candidates = reciprocal_rank_fusion(
                 all_result_sets,
                 k=settings.HYBRID_RRF_K,
                 weights=[1.0] * len(all_result_sets),
-                merge_metadata_from="first"
+                merge_metadata_from="first",
             )
         else:
             fused_candidates = all_result_sets[0] if all_result_sets else []
 
-        # ---- Rerank ----
+        # 7. Local Reranking
         if rerank and fused_candidates:
-            reranker = get_reranker()
-            # Rerank uses the original query (not rewritten) for better cross‑encoder scoring
-            final_chunks = await reranker.rerank(query, fused_candidates, top_n=top_k)
+            reranker_inst = get_reranker()
+            final_chunks = await reranker_inst.rerank(query, fused_candidates, top_n=top_k)
         else:
-            final_chunks = fused_candidates[:top_k] if top_k else fused_candidates
+            final_chunks = fused_candidates[:top_k]
 
-        # ---- Local context expansion ----
-        final_chunks = await expand_with_local_context(
-            get_chroma_client(),
-            final_chunks,
-            top_k,
-            window_size=2
-        )
+        # 8. Local context expansion
+        final_chunks = await expand_with_local_context(get_faiss_client(), final_chunks, top_k)
 
-        # ---- Build response ----
-        response = {
+        # 9. Build output response dict
+        response: Dict[str, Any] = {
             "query": query,
             "retrieval_query": retrieval_query if retrieval_query != query else None,
             "document_id": document_id,
@@ -678,12 +504,9 @@ async def query_documents(
             "expand": expand,
             "rewrite": rewrite,
         }
-        if auto_optimize:
-            response["analysis"] = analysis
 
-        # ---- Generate answer with citations ----
+        # 10. Generate answer with Ollama
         if generate and final_chunks:
-            # Build citation map and context with numbered chunks
             citation_map = {}
             context_parts = []
             for idx, chunk in enumerate(final_chunks, start=1):
@@ -692,28 +515,33 @@ async def query_documents(
                     "text": chunk["text"],
                     "metadata": chunk.get("metadata", {}),
                     "score": chunk.get("score"),
-                    "rerank_score": chunk.get("rerank_score"),
                     "chunk_id": chunk.get("id"),
                 }
                 context_parts.append(f"[{key}] {chunk['text']}")
 
-            context = "\n\n".join(context_parts)
+            context_str = "\n\n".join(context_parts)
 
-            llm = GenerativeModel(settings.VERTEX_AI_LLM_MODEL)
-            prompt = (
-                f"Vous êtes un assistant juridique STRICT. Vous devez répondre UNIQUEMENT en utilisant le contexte fourni.\n\n"
-                f"1. IDENTIFICATION: Si plusieurs clauses sont fournies, identifiez la clause qui répond PRÉCISÉMENT à la question. "
-                f"Si une clause est générique (définition) et une autre est spécifique (pénalité), choisissez TOUJOURS la clause spécifique.\n"
-                f"2. CITATION: Citez UNIQUEMENT la clause la plus pertinente. N'inventez pas de citations.\n"
-                f"3. CHIFFRES EXACTS: Copiez les nombres, dates et montants TEXTUELLEMENT. "
-                f"Si le contexte dit '500,000€', répondez '500,000€'. Si le contexte dit '30 jours', répondez '30 jours'. "
-                f"Ne changez PAS la ponctuation (virgules, points) et ne supprimez PAS les symboles (€, $, %).\n"
-                f"4. ABSENCE: Si la réponse n'est PAS explicitement mentionnée dans le contexte, répondez uniquement par : "
-                f"'Le contrat ne contient pas d'information sur ce point.' N'inventez rien.\n\n"
-                f"Contexte :\n{context}\n\nQuestion : {query}\n\nRéponse :"
+            system_prompt = (
+                "Tu es un assistant juridique expert en analyse de contrats.\n"
+                "Réponds précisément et directement à la question de l'utilisateur en exploitant les clauses du contexte ci-dessous.\n"
+                "Règles :\n"
+                "1. Cites systématiquement le numéro de la clause source entre crochets (ex: [1], [2]).\n"
+                "2. Précise les chiffres exacts (montants en euros, loyers, redevances, pourcentages, dates).\n"
+                "3. Si la réponse n'existe pas dans le contexte, indique que le contrat ne contient pas d'information sur ce point."
             )
-            response_obj = llm.generate_content(prompt, generation_config={"temperature": 0.2})
-            answer = response_obj.text
+
+            prompt = f"Contexte du contrat :\n{context_str}\n\nQuestion : {query}\n\nRéponse :"
+
+            ollama = get_ollama_client()
+            try:
+                answer = await ollama.agenerate(
+                    prompt=prompt,
+                    system=system_prompt,
+                    temperature=0.1,
+                )
+            except Exception as e:
+                logger.error(f"Ollama generation failed: {e}")
+                answer = f"Erreur lors de la génération locale Ollama ({e}). Veuillez vérifier que le serveur Ollama est démarré."
 
             response["answer"] = answer
             response["citations"] = citation_map
@@ -729,13 +557,18 @@ async def query_documents(
 
 
 # ----------------------------------------------------------------------------
-# Frontend endpoints
+# Frontend UI endpoints
 # ----------------------------------------------------------------------------
-app.mount("/static", StaticFiles(directory="src/static"), name="static")
+if os.path.exists("src/static"):
+    app.mount("/static", StaticFiles(directory="src/static"), name="static")
+
 
 @app.get("/")
 async def root():
-    return FileResponse("src/static/index.html")
+    if os.path.exists("src/static/index.html"):
+        return FileResponse("src/static/index.html")
+    return {"message": "Legal RAG Engine API is running. Access /docs for API documentation."}
+
 
 @app.post("/api/chat")
 async def api_chat(
@@ -746,10 +579,10 @@ async def api_chat(
     top_k: int = Body(5),
     generate: bool = Body(True),
     hybrid: bool = Body(True),
-    rerank: bool = Body(True),
+    rerank: bool = Body(False),
     expand: bool = Body(False),
     rewrite: bool = Body(True),
-    auto_optimize: bool = Body(True)
+    auto_optimize: bool = Body(True),
 ):
     return await query_documents(
         query=query,
@@ -771,12 +604,9 @@ async def api_chat(
 # ----------------------------------------------------------------------------
 @app.on_event("shutdown")
 async def shutdown_event():
-    global _parser, _gcs_client, _publisher, _firestore_client, _chroma_client, _bge_client, _rewriter
-    for client in [_parser, _gcs_client, _publisher, _firestore_client, _chroma_client, _bge_client, _rewriter]:
-        if client and hasattr(client, "close"):
-            try:
-                client.close()
-                logger.info(f"Closed {client.__class__.__name__}")
-            except Exception as e:
-                logger.warning(f"Error closing {client.__class__.__name__}: {e}")
-    logger.info("Shutdown complete.")
+    global _faiss_client
+    if _faiss_client is not None:
+        try:
+            _faiss_client.close()
+        except Exception as e:
+            logger.warning(f"Error closing FAISS client: {e}")

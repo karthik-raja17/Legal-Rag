@@ -65,11 +65,11 @@ class PDFParser:
     ):
         """
         Args:
-            use_ocr: Enable Google Document AI OCR fallback for scanned PDFs
+            use_ocr: Enable local OCR fallback for scanned PDFs
             use_dedoc: Enable Dedoc for structure extraction
             extract_tables: Enable table extraction
             extract_figures: Enable figure/graph extraction
-            semantic_enrichment: Enable NLP + Vertex AI enrichment
+            semantic_enrichment: Enable French NLP & NER enrichment
             language: Document language (fr/en)
             cache_dir: Top-level cache directory (creates subdirectories per layer)
             ocr_cache_dir: Cache directory for OCR (overrides cache_dir)
@@ -120,8 +120,7 @@ class PDFParser:
             language=language,
             cache_dir=semantic_cache_dir,
             **{k: v for k, v in kwargs.items()
-               if k in ['embedding_batch_size', 'entity_chunk_size', 'clause_min_length',
-                        'use_vertex_embeddings', 'use_spacy_ner']}
+               if k in ['entity_chunk_size', 'clause_min_length', 'use_spacy_ner']}
         ) if semantic_enrichment else None
 
         # Validation: warn if required libraries missing

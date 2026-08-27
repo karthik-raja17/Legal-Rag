@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -21,10 +21,8 @@ RUN python -m spacy download fr_core_news_sm
 # Copy application code
 COPY . .
 
-# Set environment variables (but don't hardcode credentials)
 ENV PYTHONUNBUFFERED=1
-# The credential will be mounted at runtime; do not set ENV for it here
 
 EXPOSE 8080
 
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "src.app.main:app", "--host", "0.0.0.0", "--port", "8080"]

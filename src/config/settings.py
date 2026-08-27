@@ -1,128 +1,107 @@
 """
-Settings and configuration for the Legal RAG system.
-Uses pydantic-settings with environment variable overrides.
+Settings and configuration for the Local Legal RAG Engine.
+100% Local: FAISS HNSW, Sentence-Transformers, Ollama, and local disk storage.
 """
-import os
+from typing import Optional, Dict
 
-from pydantic import Field, field_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings
-from typing import Optional
 
 
 class Settings(BaseSettings):
     """
-    Application settings loaded from environment variables (`.env` file or system env).
-
-    All fields can be overridden by setting environment variables with the same name
-    (e.g., `GCP_PROJECT_ID=my-project`).
+    Local application settings loaded from .env or system environment.
     """
 
-    # ==================== GCP PROJECT ====================
-    GCP_PROJECT_ID: str = Field(
-        default="your-gcp-project-id",
-        description="Google Cloud Project ID"
+    # ==================== VECTOR STORE (FAISS HNSW) ====================
+    VECTOR_STORE_TYPE: str = Field(
+        default="faiss",
+        description="Vector store engine: 'faiss'"
     )
-
-    # ==================== GCP LOCATIONS ====================
-    GCP_LOCATION: str = Field(
-        default="europe-west9",
-        description="Default GCP region for Vertex AI, Compute, and other services"
+    FAISS_INDEX_DIR: str = Field(
+        default="./data/faiss_index",
+        description="Directory to persist FAISS index and chunk metadata"
     )
-
-    DEDOC_SERVICE_URL: Optional[str] = Field(
-        default="",
-        description="URL of the Dedoc Cloud Run service"
-    )
-
-    # Document AI processor location (must be 'eu' or 'us' for multi-region processors)
-    DOCUMENT_AI_LOCATION: str = Field(
-        default="eu",
-        description="GCP location of the Document AI processor (typically 'eu' or 'us')"
-    )
-
-    DOCUMENT_AI_PROCESSOR_ID: str = Field(
-        default="your-document-ai-processor-id",
-        description="Processor ID for Document AI OCR"
-    )
-
-    # ==================== DRIVE & STORAGE ====================
-    DRIVE_EXCEL_FILE_ID: Optional[str] = Field(
-        default=None,
-        description="Google Drive file ID of the master Excel file (optional until Drive sync is wired up)"
-    )
-
-    DRIVE_PDF_FOLDER_ID: Optional[str] = Field(
-        default=None,
-        description="Google Drive folder ID for storing/reading PDF contracts"
-    )
-    GCS_BUCKET_NAME: str = Field(
-        default="your-gcs-bucket-name",
-        description="GCS bucket name for storing PDFs and parsed results"
-    )
-
-    # ==================== FIRESTORE & CHROMA ====================
-    FIRESTORE_COLLECTION: str = Field(
-        default="contract_state",
-        description="Firestore collection name for document state tracking"
-    )
-    CHROMA_HOST: str = Field(
-        default="localhost",
-        description="Chroma vector database host"
-    )
-    CHROMA_PORT: int = Field(
-        default=8000,
-        description="Chroma vector database port"
-    )
-    CHROMA_COLLECTION: str = Field(
+    FAISS_COLLECTION: str = Field(
         default="legal_contracts",
-        description="Chroma collection name for document embeddings"
+        description="FAISS collection / namespace identifier"
+    )
+    HNSW_M: int = Field(
+        default=24,
+        description="HNSW max connections per node (M=24)"
+    )
+    HNSW_EF_CONSTRUCTION: int = Field(
+        default=100,
+        description="HNSW construction-time search width (efConstruction=100)"
+    )
+    HNSW_EF_SEARCH: int = Field(
+        default=100,
+        description="HNSW query-time search depth (efSearch=100)"
     )
 
-    # ==================== VERTEX AI ====================
-    VERTEX_AI_EMBEDDING_MODEL: str = Field(
-        default="text-multilingual-embedding-002",
-        description="Vertex AI embedding model name"
+    # ==================== EMBEDDINGS (LOCAL) ====================
+    EMBEDDING_PROVIDER: str = Field(
+        default="local",
+        description="Embedding provider: 'local' (SentenceTransformers)"
     )
-    VERTEX_AI_LLM_MODEL: str = Field(
-        default="gemini-2.0-flash",
-        description="Vertex AI LLM model name for generation"
+    EMBEDDING_MODEL_NAME: str = Field(
+        default="all-MiniLM-L6-v2",
+        description="SentenceTransformers model name"
+    )
+    EMBEDDING_DIMENSION: int = Field(
+        default=384,
+        description="Embedding vector dimension (384 for all-MiniLM-L6-v2)"
+    )
+    EMBEDDING_BATCH_SIZE: int = Field(
+        default=32,
+        description="Batch size for generating embeddings"
+    )
+    EMBEDDING_DEVICE: Optional[str] = Field(
+        default=None,
+        description="Device for embeddings: 'cuda', 'cpu', or auto-detect"
+    )
+
+    # ==================== LOCAL LLM (OLLAMA) ====================
+    LLM_PROVIDER: str = Field(
+        default="ollama",
+        description="LLM provider: 'ollama'"
+    )
+    OLLAMA_BASE_URL: str = Field(
+        default="http://localhost:11434",
+        description="Ollama API base URL"
+    )
+    OLLAMA_MODEL: str = Field(
+        default="qwen2.5:7b",
+        description="Ollama model name (e.g., 'qwen2.5:7b', 'llama3.2', 'mistral')"
+    )
+    OLLAMA_TEMPERATURE: float = Field(
+        default=0.1,
+        description="Default temperature for Ollama generation"
+    )
+    OLLAMA_TIMEOUT: float = Field(
+        default=120.0,
+        description="Timeout in seconds for Ollama requests"
+    )
+
+    # ==================== LOCAL STORAGE & CACHE ====================
+    LOCAL_STORAGE_DIR: str = Field(
+        default="./data/storage",
+        description="Local directory for storing uploaded PDFs, parsed documents, and status"
+    )
+    BM25_CACHE_DIR: str = Field(
+        default="./data/bm25_cache",
+        description="Directory for caching BM25 index on local disk"
+    )
+    PARSER_CACHE_DIR: Optional[str] = Field(
+        default="./data/parser_cache",
+        description="Base directory for caching parser outputs"
     )
 
     # ==================== CHUNKING ====================
     MAX_CHUNK_TOKENS: int = Field(
-        default=512,  # headroom below Vertex's hard 2048 cap
-        description="Max tokens per chunk before falling back to paragraph-level splitting",
+        default=512,
+        description="Max tokens per chunk before splitting",
         gt=0
-    )
-
-    # ==================== PUB/SUB ====================
-    PUBSUB_TOPIC_ID: str = Field(
-        default="sync-requests",
-        description="Pub/Sub topic for sync requests"
-    )
-    PUBSUB_SUBSCRIPTION_ID: str = Field(
-        default="sync-subscription",
-        description="Pub/Sub subscription for sync requests"
-    )
-
-    # ==================== PARSING CACHE ====================
-    PARSER_CACHE_DIR: Optional[str] = Field(
-        default="./parser_cache",
-        description="Base directory for caching parser outputs across layers (set to None to disable)"
-    )
-
-    HNSW_M: int = Field(
-        default=128,
-        description="HNSW max neighbors per node (higher = better recall, more memory)"
-    )
-    HNSW_EF_CONSTRUCTION: int = Field(
-        default=1000,
-        description="HNSW construction-time search width (higher = better index quality, slower build)"
-    )
-
-    HNSW_EF_SEARCH: int = Field(
-        default=2000,
-        description="HNSW query-time search depth (higher = better recall, slower query)"
     )
 
     # ==================== HYBRID RETRIEVAL ====================
@@ -144,128 +123,92 @@ class Settings(BaseSettings):
     )
     BM25_CACHE_TTL_SECONDS: int = Field(
         default=86400,
-        description="TTL for BM25 cache on GCS (in seconds, default 24h)"
+        description="TTL for BM25 cache in seconds (default 24h)"
     )
 
-    # ==================== VERTEX AI RERANKER ====================
-    VERTEX_RERANKER_ENABLED: bool = Field(
-        default=True,
-        description="Enable Vertex AI reranking (cross-encoder) for /query"
-    )
-    VERTEX_RERANKER_LOCATION: str = Field(
-        default="global",
-        description="Location for Vertex AI Ranking API ('global' or 'us')"
-    )
-    VERTEX_RERANKER_MODEL: str = Field(
-        default="semantic-ranker-512-004",
-        description="Ranking model name (semantic-ranker-512-004 or semantic-ranker-512-003)"
-    )
-    VERTEX_RERANKER_TOP_N: int = Field(
-        default=5,
-        description="Number of chunks to return after reranking"
-    )
-    VERTEX_RERANKER_CANDIDATE_K: int = Field(
-        default=75,
-        description="Number of candidates to retrieve before reranking"
+    # ==================== RERANKER ====================
+    RERANKER_TYPE: str = Field(
+        default="none",
+        description="Reranker type: 'none' or 'local_cross_encoder'"
     )
 
     # ==================== QUERY EXPANSION ====================
     ENABLE_QUERY_EXPANSION: bool = Field(
-        default=True,
-        description="Enable Gemini-based query expansion (generate multiple variants)"
+        default=False,
+        description="Enable query expansion (generate multiple variants)"
     )
     QUERY_EXPANSION_NUM_VARIANTS: int = Field(
         default=3,
-        description="Number of query variants to generate (including original)"
+        description="Number of query variants to generate"
     )
     QUERY_EXPANSION_TEMPERATURE: float = Field(
         default=0.3,
-        description="Temperature for Gemini query expansion (lower = more focused)"
-    )
-    QUERY_EXPANSION_MAX_VARIANTS: int = Field(
-        default=3,
-        description="Maximum number of variants to generate"
+        description="Temperature for query expansion"
     )
 
     # ==================== QUERY ANALYZER ====================
     QUERY_ANALYZER_ENABLED: bool = Field(
         default=True,
-        description="Enable automatic query complexity analysis and adaptive parameters"
+        description="Enable automatic query complexity analysis"
     )
     QUERY_ANALYZER_TOP_K_LOW: int = Field(
-        default=7,
+        default=5,
         description="top_k for low-complexity queries"
     )
     QUERY_ANALYZER_TOP_K_MEDIUM: int = Field(
-        default=13,
+        default=10,
         description="top_k for medium-complexity queries"
     )
     QUERY_ANALYZER_TOP_K_HIGH: int = Field(
-        default=19,
+        default=15,
         description="top_k for high-complexity queries"
     )
-    QUERY_ANALYZER_EXPAND_MAP: dict = Field(
-        default={"low": False, "medium": True, "high": True},
+    QUERY_ANALYZER_EXPAND_MAP: Dict[str, bool] = Field(
+        default={"low": False, "medium": False, "high": True},
         description="Whether to enable expansion per complexity level"
     )
-    QUERY_ANALYZER_RERANK_MAP: dict = Field(
-        default={"low": True, "medium": True, "high": True},
-        description="Whether to enable reranking per complexity level (default: always true)"
+    QUERY_ANALYZER_RERANK_MAP: Dict[str, bool] = Field(
+        default={"low": False, "medium": False, "high": False},
+        description="Whether to enable reranking per complexity level"
     )
     QUERY_ANALYZER_MODE: str = Field(
         default="heuristic",
         description="Query analysis mode: 'heuristic' or 'llm'"
     )
     QUERY_ANALYZER_LLM_MODEL: str = Field(
-        default="gemini-2.0-flash",
+        default="qwen2.5:7b",
         description="Model to use for LLM-based analysis"
     )
 
     # ==================== QUERY REWRITING ====================
     ENABLE_QUERY_REWRITING: bool = Field(
         default=True,
-        description="Enable Gemini-based query rewriting (formal legal reformulation)"
+        description="Enable query rewriting (formal legal reformulation)"
     )
     REWRITER_MODEL: str = Field(
-        default="gemini-2.5-flash",
+        default="qwen2.5:7b",
         description="Model to use for query rewriting"
     )
     REWRITER_TEMPERATURE: float = Field(
-        default=0.2,
-        description="Temperature for rewriting (low = deterministic)"
+        default=0.1,
+        description="Temperature for rewriting"
     )
     REWRITER_CACHE_TTL_SECONDS: int = Field(
         default=3600,
         description="TTL for rewrite cache in seconds (1 hour)"
     )
 
-    # ==================== VALIDATION ====================
-    @field_validator("DOCUMENT_AI_LOCATION")
-    def validate_document_ai_location(cls, v: str) -> str:
-        """Document AI processor location must be 'eu' or 'us' for multi-region."""
-        if v not in ("eu", "us"):
-            raise ValueError("DOCUMENT_AI_LOCATION must be 'eu' or 'us' for multi-region processors")
-        return v
-
-    @field_validator("GCP_PROJECT_ID")
-    def not_empty(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("This field cannot be empty")
-        return v.strip()
-
-    # ==================== COMPUTED PROPERTIES ====================
-    @property
-    def document_ai_processor_name(self) -> str:
-        """Full resource name of the Document AI processor."""
-        return (f"projects/{self.GCP_PROJECT_ID}/locations/{self.DOCUMENT_AI_LOCATION}"
-                f"/processors/{self.DOCUMENT_AI_PROCESSOR_ID}")
+    # ==================== OPTIONAL LOCAL DEDOC ====================
+    DEDOC_SERVICE_URL: Optional[str] = Field(
+        default="",
+        description="URL of optional local Dedoc service (e.g. http://localhost:1231)"
+    )
 
     # ==================== CONFIGURATION ====================
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = True
-        # Allow extra fields for future expansion
         extra = "ignore"
 
 

@@ -12,11 +12,6 @@ import os
 import tempfile
 from typing import Optional, Dict, Any, List, Tuple
 from filelock import FileLock
-import requests
-
-import google.auth.transport.requests
-import google.oauth2.id_token
-
 # Dedoc import (graceful fallback)
 try:
     from dedoc import DedocManager
@@ -266,25 +261,11 @@ class StructureExtractor:
         return self._extract_with_dedoc_local(pdf_content)
 
     def _get_dedoc_auth_header(self) -> Dict[str, str]:
-        """
-        dedoc-service is a private Cloud Run service (only legal-rag-sa has
-        roles/run.invoker on it). Unauthenticated requests get rejected by
-        Cloud Run's IAM layer -- Google Frontend returns a generic Apache-style
-        403 before the request ever reaches the dedoc container. This fetches
-        a Google-signed identity token scoped to dedoc_url as the audience,
-        using the ambient credentials of whatever service account this
-        container runs as (legal-rag-sa in Cloud Run; your local ADC when
-        testing locally).
-        """
-        try:
-            auth_req = google.auth.transport.requests.Request()
-            token = google.oauth2.id_token.fetch_id_token(auth_req, self.dedoc_url)
-            return {"Authorization": f"Bearer {token}"}
-        except Exception as e:
-            logger.warning(f"Could not fetch identity token for Dedoc call: {e}")
-            return {}
+        """Headers for local or remote Dedoc requests."""
+        return {}
 
     def _extract_with_dedoc_remote(self, pdf_content: bytes) -> Optional[Dict]:
+        import requests
         try:
             files = {"file": ("document.pdf", pdf_content, "application/pdf")}
             data = {k: str(v) for k, v in self.dedoc_parameters.items()}
