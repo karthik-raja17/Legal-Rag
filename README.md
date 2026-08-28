@@ -12,6 +12,12 @@ Production-grade Retrieval-Augmented Generation (RAG) system for **French legal 
 
 ---
 
+> **💡 Two flavours are available**  
+> - **Cloud version** (`main`) – production‑grade, scalable, GCP‑integrated.  
+> - **Local version** (`local`) – runs 100% offline, no cloud dependencies, ideal for sensitive data.  
+> 
+> Switch to the [`local`](https://github.com/karthik-raja17/Legal-Rag/tree/personal-rag) branch for the Ollama + FAISS implementation.
+
 ## Highlights
 
 - **Legal PDF Parser** — `src/core/parser/` : PyMuPDF + Google Document AI (OCR) + Dedoc microservice for layout, TOC filtering (`chunker.py:30`), clause-aware splitting, table extraction (camelot/pdfplumber).
