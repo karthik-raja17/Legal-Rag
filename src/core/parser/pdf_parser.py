@@ -54,7 +54,7 @@ class PDFParser:
         extract_tables: bool = True,
         extract_figures: bool = True,
         semantic_enrichment: bool = True,
-        language: str = "fr",
+        language: str = "en",
         cache_dir: Optional[str] = None,
         ocr_cache_dir: Optional[str] = None,
         structure_cache_dir: Optional[str] = None,
@@ -69,8 +69,8 @@ class PDFParser:
             use_dedoc: Enable Dedoc for structure extraction
             extract_tables: Enable table extraction
             extract_figures: Enable figure/graph extraction
-            semantic_enrichment: Enable French NLP & NER enrichment
-            language: Document language (fr/en)
+            semantic_enrichment: Enable English NLP & NER enrichment
+            language: Document language (en/fr)
             cache_dir: Top-level cache directory (creates subdirectories per layer)
             ocr_cache_dir: Cache directory for OCR (overrides cache_dir)
             structure_cache_dir: Cache directory for structure (overrides cache_dir)

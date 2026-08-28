@@ -1,5 +1,5 @@
 """
-Query complexity analyzer for adaptive retrieval parameters.
+Query complexity analyzer for adaptive retrieval parameters (English & CUAD contracts).
 
 Supports two modes:
 - heuristic: fast rule-based estimation (word count, legal terms, numbers, question type)
@@ -22,19 +22,25 @@ class QueryAnalyzer:
         self.mode = settings.QUERY_ANALYZER_MODE
         self.llm = ollama_client
 
-        # French legal keywords
+        # English legal contract keywords (aligned with CUAD benchmark)
         self.legal_keywords = [
-            "obligation", "indemnité", "garantie", "responsabilité", "assurance",
-            "confidentialité", "résiliation", "préavis", "pénalité", "délai",
-            "frais", "prix", "révision", "loyer", "caution", "dépôt",
-            "tribunal", "arbitrage", "exécution", "livraison", "performance",
-            "contrat", "clause", "article", "annexe", "partie", "bail", "cession"
+            "indemnif", "indemnity", "hold harmless", "liability", "damages",
+            "termination", "expire", "cancel", "default", "breach",
+            "governing law", "jurisdiction", "venue", "dispute", "arbitration",
+            "confidential", "non-disclosure", "proprietary", "trade secret",
+            "intellectual property", "ip", "patent", "trademark", "copyright",
+            "non-compete", "non-solicit", "exclusivity", "restriction",
+            "payment", "fee", "compensation", "royalty", "reimbursement", "price",
+            "warranty", "warranties", "representation", "covenant", "obligation",
+            "force majeure", "audit", "assignment", "assignability", "amendment",
+            "severability", "entire agreement", "effective date", "term", "renewal"
         ]
+
         # Question type hints
         self.question_words = {
-            "simple": ["qui", "quand", "où", "quel", "quelle", "combien"],
-            "moderate": ["quoi", "que", "qu'est-ce", "quel est", "quelle est"],
-            "complex": ["comment", "pourquoi", "dans quelles conditions", "en cas de", "modalités"]
+            "simple": ["who", "when", "where", "what date", "how much", "how many", "is there", "does"],
+            "moderate": ["what is", "which", "what are", "what obligations"],
+            "complex": ["how", "why", "under what conditions", "in the event of", "what remedies", "exceptions to"]
         }
 
     def analyze(self, query: str) -> Dict[str, Any]:
@@ -69,18 +75,18 @@ class QueryAnalyzer:
     def _analyze_heuristic(self, query: str) -> Dict[str, Any]:
         words = re.findall(r'\b\w+\b', query.lower())
         word_count = len(words)
-        legal_count = sum(1 for w in words if w in self.legal_keywords)
+        lower_q = query.lower()
+        legal_count = sum(1 for kw in self.legal_keywords if kw in lower_q)
         has_numbers = bool(re.search(r'\d+', query))
 
         qtype = "moderate"
-        lower_q = query.lower()
         for q_type, terms in self.question_words.items():
             if any(term in lower_q for term in terms):
                 qtype = q_type
                 break
 
         score = 0.0
-        if word_count > 5:
+        if word_count > 6:
             score += 0.5
         if word_count > 15:
             score += 0.5
@@ -127,14 +133,14 @@ class QueryAnalyzer:
             self.llm = OllamaClient()
 
         prompt = f"""
-Tu es un expert en analyse de requêtes juridiques.
-Analyse la requête suivante et retourne un JSON valide avec les champs :
-- "complexity": "low", "medium" ou "high"
-- "suggested_top_k": entier (entre 3 et 10)
+You are an expert legal query analyzer.
+Analyze the following query and return a valid JSON object with the following fields:
+- "complexity": "low", "medium", or "high"
+- "suggested_top_k": integer (between 3 and 10)
 - "suggested_expand": boolean
 - "suggested_rerank": boolean
 
-Requête : {query}
+Query: {query}
 """
         response_text = self.llm.generate(
             prompt=prompt,

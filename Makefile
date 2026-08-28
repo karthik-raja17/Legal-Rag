@@ -1,4 +1,4 @@
-.PHONY: run test ingest clean
+.PHONY: run test ingest ingest-cuad clean
 
 # Run the FastAPI server locally
 run:
@@ -9,10 +9,14 @@ test:
 	python scripts/test_local_rag.py
 	python scripts/test_fastapi_endpoints.py
 
-# Ingest test contract into FAISS index
+# Ingest sample contract into FAISS index
 ingest:
 	python scripts/create_test_pdf.py
-	python scripts/local_ingest.py --pdf data/test_contract.pdf --doc-id bail_lentilly_01 --site Lentilly
+	python scripts/local_ingest.py --pdf data/sample_contract.pdf --doc-id msa_acme_01 --site "Delaware Headquarters"
+
+# Ingest all CUAD contracts in data/cuad/pdfs
+ingest-cuad:
+	python scripts/local_ingest.py --dir data/cuad/pdfs/Part_I/Affiliate_Agreements --site "Affiliate Agreements"
 
 # Clean caches and temporary build artifacts
 clean:

@@ -29,10 +29,10 @@ class QueryRewriter:
         self._cache = {}
 
         self.system_prompt = (
-            "Tu es un expert juridique spécialisé dans les contrats civils, commerciaux et baux. "
-            "Ta tâche unique est de reformuler la question de l'utilisateur en une requête de recherche "
-            "juridique formelle, concise et précise pour interroger une base vectorielle. "
-            "Ne réponds pas à la question. Ne rajoute pas d'explication. Renvoie uniquement la question reformulée."
+            "You are a legal contract search specialist. "
+            "Your sole task is to rewrite the user's natural language question into a formal, concise, "
+            "and precise legal search query suitable for hybrid dense and keyword retrieval across contract clauses. "
+            "Do not answer the question. Do not provide explanations or commentary. Return ONLY the rewritten query."
         )
 
     def _get_cached(self, query: str) -> Optional[str]:
@@ -51,7 +51,7 @@ class QueryRewriter:
         if cached is not None:
             return cached
 
-        prompt = f"Question brute : {query}\nQuestion juridique formulée :"
+        prompt = f"Raw query: {query}\nFormal legal search query:"
 
         try:
             rewritten = await self.ollama.agenerate(

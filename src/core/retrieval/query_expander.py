@@ -60,13 +60,12 @@ class QueryExpander:
         self._cache = _TTLCache(maxsize=128, ttl_seconds=cache_ttl_seconds)
 
         self.prompt_template = (
-            "Vous êtes un expert juridique spécialisé dans les contrats. "
-            "Reformulez la question suivante en {num_variants} variantes de recherche différentes, "
-            "en utilisant un vocabulaire juridique varié, en gardant le même sens. "
-            "Retournez uniquement les variantes, une par ligne, sans numérotation "
-            "et sans commentaire.\n\n"
-            "Question originale : {query}\n\n"
-            "Variantes :"
+            "You are a legal contract specialist. "
+            "Reformulate the following question into {num_variants} distinct search query variations, "
+            "using legal contract terminology and synonyms while preserving the exact original intent. "
+            "Return ONLY the query variations, one per line, without numbering and without commentary.\n\n"
+            "Original question: {query}\n\n"
+            "Variations:"
         )
 
     async def expand(self, query: str) -> List[str]:

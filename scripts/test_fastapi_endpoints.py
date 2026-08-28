@@ -1,5 +1,5 @@
 """
-Test FastAPI endpoints in-process with TestClient / AsyncClient.
+Test FastAPI endpoints in-process with TestClient / AsyncClient for English contract RAG.
 """
 import asyncio
 import json
@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from httpx import AsyncClient, ASGITransport
 from src.app.main import app
+
 
 async def test_api():
     transport = ASGITransport(app=app)
@@ -31,11 +32,10 @@ async def test_api():
         resp = await ac.get("/api/dropdown-options")
         print("Dropdown response:", resp.status_code, resp.json())
         assert resp.status_code == 200
-        assert "Lentilly" in resp.json().get("sites", [])
 
-        print("\n4. Testing POST /query for rent...")
+        print("\n4. Testing POST /query for annual fee...")
         query_payload = {
-            "query": "Quel est le montant de la redevance ou du loyer annuel ?",
+            "query": "What is the annual service fee and monthly payment under this agreement?",
             "generate": True,
             "hybrid": True,
             "rewrite": False,
@@ -47,11 +47,11 @@ async def test_api():
         print(f"Answer: {data.get('answer')}")
         print(f"Citations count: {len(data.get('citations', {}))}")
         assert resp.status_code == 200
-        assert "12 500" in data.get("answer", "") or "12500" in data.get("answer", "")
+        assert "120,000" in data.get("answer", "") or "10,000" in data.get("answer", "") or "120000" in data.get("answer", "")
 
-        print("\n5. Testing POST /query for duration...")
+        print("\n5. Testing POST /query for contract duration...")
         query_payload_dur = {
-            "query": "Quelle est la durée du bail ?",
+            "query": "What is the initial term and duration of the contract?",
             "generate": True,
             "hybrid": True,
             "rewrite": False,
@@ -60,22 +60,23 @@ async def test_api():
         resp_dur = await ac.post("/query", json=query_payload_dur)
         data_dur = resp_dur.json()
         print(f"Answer duration: {data_dur.get('answer')}")
-        assert "30" in data_dur.get("answer", "") or "trente" in data_dur.get("answer", "")
+        assert "36" in data_dur.get("answer", "") or "thirty-six" in data_dur.get("answer", "").lower()
 
-        print("\n6. Testing POST /query for penalties...")
-        query_payload_pen = {
-            "query": "Quel est le montant de la pénalité par jour de retard ?",
+        print("\n6. Testing POST /query for governing law and jurisdiction...")
+        query_payload_law = {
+            "query": "What state law governs this agreement and where are disputes resolved?",
             "generate": True,
             "hybrid": True,
             "rewrite": False,
             "top_k": 3,
         }
-        resp_pen = await ac.post("/query", json=query_payload_pen)
-        data_pen = resp_pen.json()
-        print(f"Answer penalty: {data_pen.get('answer')}")
-        assert "50" in data_pen.get("answer", "")
+        resp_law = await ac.post("/query", json=query_payload_law)
+        data_law = resp_law.json()
+        print(f"Answer governing law: {data_law.get('answer')}")
+        assert "Delaware" in data_law.get("answer", "")
 
         print("\n🎉 All FastAPI endpoints verified successfully!")
+
 
 if __name__ == "__main__":
     asyncio.run(test_api())

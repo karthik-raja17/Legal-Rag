@@ -299,9 +299,9 @@ class HybridRetriever:
 
     def _tokenize(self, text: str) -> List[str]:
         """
-        French-aware tokenizer for legal contracts.
-        Preserves numbers, currencies, percentages, and accented characters.
+        Tokenizer for legal contracts.
+        Preserves numbers, currencies, percentages, hyphens, and legal section identifiers.
         """
         import re
-        cleaned = re.sub(r"[^a-zA-Zàâäéèêëîïôöùûüÿç0-9€$%\s'-]", " ", text)
+        cleaned = re.sub(r"[^a-zA-Z0-9$€£%\s'_-]", " ", text)
         return cleaned.lower().split()

@@ -37,19 +37,24 @@ class StructureExtractor:
     """
 
     # French legal numbering patterns – used for both Dedoc post-processing
+    # English & standard legal numbering patterns – used for Dedoc post-processing
     # and fallback extraction.
-    FRENCH_PATTERNS = {
+    LEGAL_PATTERNS = {
         "article": re.compile(r"^(Article|ART\.?|Art\.?)\s+(\d+|[IVXLCDM]+)", re.IGNORECASE),
-        "section": re.compile(r"^(Section|SECTION)\s+(\d+|[IVXLCDM]+)", re.IGNORECASE),
-        "subsection": re.compile(r"^(Sous-section|Sous-Section)\s+(\d+|[IVXLCDM]+)", re.IGNORECASE),
-        "paragraph": re.compile(r"^([A-Z]\.|[0-9]+\.|[IVXLCDM]+\.)", re.IGNORECASE),
-        "subparagraph": re.compile(r"^([a-z]\.|[0-9]+\)|[IVXLCDM]+\))", re.IGNORECASE),
+        "schedule": re.compile(r"^(Schedule|SCHEDULE|Exhibit|EXHIBIT|Annex|ANNEX|Appendix|APPENDIX)\s+(\d+|[IVXLCDM]+|[A-Z])", re.IGNORECASE),
+        "recitals": re.compile(r"^(RECITALS|Recitals|WITNESSETH|PREAMBLE|BACKGROUND)\b", re.IGNORECASE),
+        "section": re.compile(r"^(Section|SEC\.?|Sec\.?)\s+(\d+|[IVXLCDM]+(\.\d+)*)", re.IGNORECASE),
         "clause": re.compile(r"^(Clause|CLAUSE)\s+(\d+|[IVXLCDM]+)", re.IGNORECASE),
+        "subsection": re.compile(r"^(Subsection|Sub-section)\s+(\d+|[IVXLCDM]+)", re.IGNORECASE),
+        "paragraph": re.compile(r"^([0-9]+\.[0-9]+(\.[0-9]+)*|[A-Z]\.|[0-9]+\.)", re.IGNORECASE),
+        "subparagraph": re.compile(r"^(\([a-zA-Z0-9]+\)|[a-z]\.|[0-9]+\))", re.IGNORECASE),
     }
 
     # Mapping from pattern type to hierarchy level (0 = top)
     LEVEL_MAP = {
         "article": 0,
+        "schedule": 0,
+        "recitals": 0,
         "section": 1,
         "clause": 1,
         "subsection": 2,
@@ -60,7 +65,7 @@ class StructureExtractor:
     def __init__(
         self,
         use_dedoc: bool = True,
-        language: str = "fr",
+        language: str = "en",
         cache_dir: Optional[str] = None,
         dedoc_parameters: Optional[Dict] = None,
         dedoc_url: Optional[str] = None,
@@ -69,18 +74,16 @@ class StructureExtractor:
         """
         Args:
             use_dedoc: Whether to attempt Dedoc extraction (falls back to regex if unavailable).
-            language: Language hint for Dedoc ('fr', 'en', etc.).
+            language: Language hint for Dedoc ('en', 'fr', etc.).
             cache_dir: Optional directory to cache extracted structures (JSON).
             dedoc_parameters: Additional parameters to pass to Dedoc (e.g., 'structure_type').
-            dedoc_url: Base URL of a remote Dedoc service (e.g. the Cloud Run dedoc-service).
-                       If set, this takes priority over the local DedocManager import.
+            dedoc_url: Base URL of a remote Dedoc service.
             dedoc_timeout: Request timeout (seconds) for the remote Dedoc call.
         """
-        # Same block, extend it to also pass language:
         self.language = language
         self.dedoc_parameters = dedoc_parameters or {
             "structure_type": "tree",
-            "language": "fra" if language == "fr" else "eng",
+            "language": "eng" if language == "en" else "fra",
         }
         self.dedoc_url = dedoc_url.strip() if dedoc_url and dedoc_url.strip() else None
         self.dedoc_timeout = dedoc_timeout
@@ -435,25 +438,22 @@ class StructureExtractor:
 
     def _detect_section_type(self, text: str) -> str:
         """
-        Classify a Dedoc node's text as a French legal section type using the
-        same FRENCH_PATTERNS regexes the regex fallback path already relies on,
-        so both paths produce consistent section_type values. Returns "paragraph"
-        for anything that doesn't match a known heading pattern.
+        Classify a Dedoc node's text as a legal section type using LEGAL_PATTERNS.
         """
         if not text:
             return "paragraph"
         stripped = text.strip()
-        for type_name, pattern in self.FRENCH_PATTERNS.items():
+        for type_name, pattern in self.LEGAL_PATTERNS.items():
             if pattern.match(stripped):
                 return type_name
         return "paragraph"
 
     # -------------------------------------------------------------------------
-    # French Legal Normalization
+    # Legal Structure Normalization
     # -------------------------------------------------------------------------
 
     def _normalize_french_structure(self, structure: Dict) -> Dict:
-        """Normalize the hierarchy with French legal numbering."""
+        """Normalize the hierarchy with legal numbering."""
         root = structure.get("root")
         if not root:
             return structure
@@ -480,35 +480,21 @@ class StructureExtractor:
         else:
             node["section_id"] = f"sec_{num}" if num != "0" else "root"
 
-        # Build breadcrumb from parent (stored in node for now)
-        # We'll compute after children processed
-        # For now, set a placeholder
         node["breadcrumb"] = [heading] if heading else []
 
-        # Process children
         children = node.get("children", [])
-        child_paths = []
         for child in children:
-            child_paths.append(self._assign_ids(child, node["section_id"]))
-
-        # Update breadcrumb by prepending parent's heading
-        if parent_path:
-            # Get parent breadcrumb from somewhere? We can store parent reference.
-            # Simpler: recursively build breadcrumb later.
-            pass
+            self._assign_ids(child, node["section_id"])
 
         return node["section_id"]
 
     def _extract_number(self, heading: str, section_type: str) -> str:
         if not heading:
             return "0"
-        pattern = self.FRENCH_PATTERNS.get(section_type)
+        pattern = self.LEGAL_PATTERNS.get(section_type)
         if pattern:
             match = pattern.match(heading.strip())
             if match:
-                # match.groups() returns a tuple -- must compare its length, not the
-                # tuple itself. Patterns like "article" have 2 groups (word + number),
-                # while "paragraph" has only 1 group (the number itself).
                 if len(match.groups()) > 1:
                     return match.group(2) or "0"
                 else:
@@ -524,9 +510,7 @@ class StructureExtractor:
 
     def _extract_with_regex(self, raw_text: str, pages: List[Dict]) -> Dict:
         """
-        Fallback: extract hierarchy using regex patterns, walking page-by-page
-        (when page data is available) so each node can be tagged with the page
-        it started on -- required for Layer 3's table-to-section mapping.
+        Fallback: extract hierarchy using regex patterns, walking page-by-page.
         """
         root = {
             "section_id": "root",
@@ -541,8 +525,6 @@ class StructureExtractor:
 
         stack = [root]
 
-        # Walk page-by-page when we have per-page text, so we know which page
-        # each line came from. Fall back to a single "page 1" pass otherwise.
         if pages:
             line_sources = [(p.get("page_num", i + 1), line)
                              for i, p in enumerate(pages)
@@ -593,7 +575,7 @@ class StructureExtractor:
         Detect if a line is a heading and determine its level.
         Returns dict with 'type', 'level', 'text'.
         """
-        for type_name, pattern in self.FRENCH_PATTERNS.items():
+        for type_name, pattern in self.LEGAL_PATTERNS.items():
             if pattern.match(line):
                 return {
                     "type": type_name,

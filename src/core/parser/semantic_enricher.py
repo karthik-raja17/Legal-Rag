@@ -1,7 +1,7 @@
 """
-Layer 4: Semantic Enrichment & NLP
-Extracts French named entities (organizations, persons, locations, dates, amounts)
-and classifies legal clauses using spaCy and regex heuristics.
+Layer 4: Semantic Enrichment & NLP (English & CUAD Contracts)
+Extracts named entities (parties/organizations, persons, locations, dates, monetary amounts)
+and classifies legal clauses using spaCy (en_core_web_sm) and legal regex heuristics.
 """
 import logging
 import hashlib
@@ -21,31 +21,32 @@ from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-FRENCH_DATE_PATTERN = re.compile(
-    r"\b(\d{1,2}\s+(?:janvier|f[ée]vrier|mars|avril|mai|juin|juillet|ao[uû]t|"
-    r"septembre|octobre|novembre|d[ée]cembre)\s+\d{4}|\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})\b",
+# English Date & Amount regexes
+ENGLISH_DATE_PATTERN = re.compile(
+    r"\b((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:st|nd|rd|th)?,\s+\d{4}|"
+    r"\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}|"
+    r"\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}|\d{4}-\d{2}-\d{2})\b",
     re.IGNORECASE,
 )
-FRENCH_AMOUNT_PATTERN = re.compile(
-    r"\b(\d{1,3}(?:[ \u202f.]\d{3})*(?:,\d{2})?\s?(?:€|EUR|euros?)|"
-    r"(?:€|EUR)\s?\d{1,3}(?:[ \u202f.]\d{3})*(?:,\d{2})?)\b",
+ENGLISH_AMOUNT_PATTERN = re.compile(
+    r"\b(\$\s?\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\d{1,3}(?:,\d{3})*(?:\.\d{2})?\s?(?:USD|dollars?|EUR|€|GBP|£))\b",
     re.IGNORECASE,
 )
 
 
 class SemanticEnricher:
     """
-    Enriches parsed document with:
-    - Named entities (organizations, dates, amounts, persons, locations)
-    - Clause type classification (obligation, payment, guarantee, termination, etc.)
+    Enriches parsed legal documents with:
+    - Named entities (organizations/parties, dates, amounts, persons, locations)
+    - Clause type classification based on legal contract taxonomies (CUAD categories).
     """
 
     def __init__(
         self,
-        language: str = "fr",
+        language: str = "en",
         cache_dir: Optional[str] = None,
         entity_chunk_size: int = 100000,
-        clause_min_length: int = 50,
+        clause_min_length: int = 40,
         use_spacy_ner: bool = True,
         **kwargs
     ):
@@ -61,24 +62,24 @@ class SemanticEnricher:
             self.cache_lock_file = self.cache_file + ".lock"
             self._ensure_cache_file()
 
-        # Initialize spaCy
+        # Initialize spaCy English model
         self.nlp = None
         if self.use_spacy_ner and SPACY_AVAILABLE:
             try:
-                model_name = f"{language}_core_news_sm" if language == "fr" else "en_core_web_sm"
+                model_name = f"{language}_core_web_sm" if language == "en" else f"{language}_core_news_sm"
                 self.nlp = spacy.load(model_name)
                 keep = [p for p in ("tok2vec", "ner") if self.nlp.has_pipe(p)]
                 self.nlp.select_pipes(enable=keep)
                 logger.info(f"Loaded spaCy model: {model_name} (active pipes: {keep})")
             except OSError:
-                logger.warning(f"spaCy model not found. Run: python -m spacy download {language}_core_news_sm")
+                logger.warning(f"spaCy model not found. Run: python -m spacy download {language}_core_web_sm")
                 self.nlp = None
         else:
             self.nlp = None
 
         self.clause_classifier = self._keyword_classifier
 
-    def _ensure_cache_file(self) -> None:
+    def _ensure_cache_file() -> None:
         if not os.path.exists(self.cache_file):
             with open(self.cache_file, "w", encoding="utf-8") as f:
                 json.dump({}, f)
@@ -171,10 +172,9 @@ class SemanticEnricher:
             "locations": [],
         }
 
-        # French dates & amounts
-        for match in FRENCH_DATE_PATTERN.finditer(text):
+        for match in ENGLISH_DATE_PATTERN.finditer(text):
             entities["dates"].append({"text": match.group(0), "type": "date"})
-        for match in FRENCH_AMOUNT_PATTERN.finditer(text):
+        for match in ENGLISH_AMOUNT_PATTERN.finditer(text):
             entities["amounts"].append({"text": match.group(0), "type": "amount"})
 
         if not self.nlp:
@@ -194,6 +194,10 @@ class SemanticEnricher:
                         entities["persons"].append({"text": ent.text, "type": "person"})
                     elif label in ("loc", "location", "gpe"):
                         entities["locations"].append({"text": ent.text, "type": "location"})
+                    elif label in ("money", "amount") and not any(e["text"] == ent.text for e in entities["amounts"]):
+                        entities["amounts"].append({"text": ent.text, "type": "amount"})
+                    elif label == "date" and not any(e["text"] == ent.text for e in entities["dates"]):
+                        entities["dates"].append({"text": ent.text, "type": "date"})
             except Exception as e:
                 logger.warning(f"Entity extraction chunk failed: {e}")
 
@@ -216,7 +220,7 @@ class SemanticEnricher:
         def traverse(node):
             section_type = node.get("section_type", "")
             text = node.get("text", "")
-            if section_type in ("paragraph", "subparagraph") and text and len(text) >= self.clause_min_length:
+            if section_type in ("paragraph", "subparagraph", "clause", "section") and text and len(text) >= self.clause_min_length:
                 clause_type = self.clause_classifier(text)
                 clauses.append({
                     "section_id": node.get("section_id"),
@@ -233,23 +237,40 @@ class SemanticEnricher:
         return clauses
 
     def _keyword_classifier(self, text: str) -> str:
+        """
+        Classifies legal text into core CUAD / contract categories.
+        """
         text_lower = text.lower()
-        if any(kw in text_lower for kw in ["obligation", "s'engage", "doit", "devra"]):
-            return "obligation"
-        if any(kw in text_lower for kw in ["paiement", "payer", "facture", "tarif", "prix", "redevance", "loyer"]):
-            return "payment_term"
-        if any(kw in text_lower for kw in ["garantie", "garentie", "caution"]):
-            return "guarantee"
-        if any(kw in text_lower for kw in ["résiliation", "terminaison", "annulation", "fin"]):
+        if any(kw in text_lower for kw in ["indemnif", "hold harmless", "defend and hold"]):
+            return "indemnification"
+        if any(kw in text_lower for kw in ["terminat", "right to cancel", "expiration of term"]):
             return "termination"
-        if any(kw in text_lower for kw in ["conformité", "conforme", "norme", "réglement"]):
-            return "compliance"
-        if any(kw in text_lower for kw in ["durée", "période", "délai", "échéance"]):
+        if any(kw in text_lower for kw in ["governing law", "jurisdiction", "venue", "laws of the state"]):
+            return "governing_law"
+        if any(kw in text_lower for kw in ["confidential", "non-disclosure", "proprietary information"]):
+            return "confidentiality"
+        if any(kw in text_lower for kw in ["intellectual property", "patent", "copyright", "trademark", "work made for hire"]):
+            return "ip_assignment"
+        if any(kw in text_lower for kw in ["non-compete", "non compete", "covenant not to compete", "restrictive covenant"]):
+            return "non_compete"
+        if any(kw in text_lower for kw in ["non-solicit", "non solicit", "solicitation of employees"]):
+            return "non_solicitation"
+        if any(kw in text_lower for kw in ["payment", "fee", "compensation", "invoice", "royalty", "reimbursement", "price"]):
+            return "payment_term"
+        if any(kw in text_lower for kw in ["term of agreement", "effective date", "renewal", "duration"]):
             return "duration"
-        if any(kw in text_lower for kw in ["responsabilité", "responsable", "assurance"]):
-            return "liability"
-        if any(kw in text_lower for kw in ["droit", "autoriser", "permission"]):
-            return "right"
+        if any(kw in text_lower for kw in ["limitation of liability", "consequential damages", "cap on liability"]):
+            return "limitation_of_liability"
+        if any(kw in text_lower for kw in ["warranty", "warranties", "representation and warranty", "as is"]):
+            return "warranties"
+        if any(kw in text_lower for kw in ["force majeure", "acts of god", "natural disaster"]):
+            return "force_majeure"
+        if any(kw in text_lower for kw in ["audit right", "inspection of books", "books and records"]):
+            return "audit_rights"
+        if any(kw in text_lower for kw in ["assignment", "assignability", "successor and assign"]):
+            return "assignment"
+        if any(kw in text_lower for kw in ["shall", "must", "agrees to", "covenants to"]):
+            return "obligation"
         return "general"
 
     def _inject_clause_into_structure(self, structure: Dict, clauses: List[Dict]):

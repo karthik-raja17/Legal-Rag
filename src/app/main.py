@@ -60,9 +60,9 @@ logger = logging.getLogger(__name__)
 # FastAPI App
 # ----------------------------------------------------------------------------
 app = FastAPI(
-    title="Legal RAG Engine (Local)",
-    description="Local French legal contract RAG engine with FAISS, all-MiniLM-L6-v2, and Ollama.",
-    version="3.0.0",
+    title="Legal Contract RAG Engine (CUAD & Local)",
+    description="Local English contract RAG engine with FAISS, Qwen3-Embedding-0.6B (MRL 512d), and Ollama.",
+    version="3.1.0",
 )
 
 
@@ -522,15 +522,15 @@ async def query_documents(
             context_str = "\n\n".join(context_parts)
 
             system_prompt = (
-                "Tu es un assistant juridique expert en analyse de contrats.\n"
-                "Réponds précisément et directement à la question de l'utilisateur en exploitant les clauses du contexte ci-dessous.\n"
-                "Règles :\n"
-                "1. Cites systématiquement le numéro de la clause source entre crochets (ex: [1], [2]).\n"
-                "2. Précise les chiffres exacts (montants en euros, loyers, redevances, pourcentages, dates).\n"
-                "3. Si la réponse n'existe pas dans le contexte, indique que le contrat ne contient pas d'information sur ce point."
+                "You are an expert legal assistant specialized in contract analysis.\n"
+                "Answer the user's question directly and precisely using ONLY the contract clauses provided in the context below.\n"
+                "Rules:\n"
+                "1. Always cite the relevant source clause number in brackets (e.g. [1], [2]).\n"
+                "2. Preserve exact numerical figures, dates, percentages, monetary amounts, and legal definitions.\n"
+                "3. If the answer is not supported or mentioned in the context, explicitly state that the contract does not contain information regarding this matter."
             )
 
-            prompt = f"Contexte du contrat :\n{context_str}\n\nQuestion : {query}\n\nRéponse :"
+            prompt = f"Contract Context:\n{context_str}\n\nQuestion: {query}\n\nAnswer:"
 
             ollama = get_ollama_client()
             try:
@@ -541,12 +541,12 @@ async def query_documents(
                 )
             except Exception as e:
                 logger.error(f"Ollama generation failed: {e}")
-                answer = f"Erreur lors de la génération locale Ollama ({e}). Veuillez vérifier que le serveur Ollama est démarré."
+                answer = f"Local Ollama generation error ({e}). Please verify the Ollama service is running."
 
             response["answer"] = answer
             response["citations"] = citation_map
         elif generate and not final_chunks:
-            response["answer"] = "Aucun document pertinent trouvé pour répondre à cette question."
+            response["answer"] = "No relevant contract clauses found to answer this question."
             response["citations"] = {}
 
         return response

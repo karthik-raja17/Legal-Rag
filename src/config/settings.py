@@ -1,6 +1,6 @@
 """
-Settings and configuration for the Local Legal RAG Engine.
-100% Local: FAISS HNSW, Sentence-Transformers, Ollama, and local disk storage.
+Settings and configuration for the Local Legal RAG Engine (English & CUAD).
+100% Local: FAISS HNSW, Qwen3-Embedding-0.6B (MRL 512d), Ollama, and local storage.
 """
 from typing import Optional, Dict
 
@@ -39,18 +39,18 @@ class Settings(BaseSettings):
         description="HNSW query-time search depth (efSearch=100)"
     )
 
-    # ==================== EMBEDDINGS (LOCAL) ====================
+    # ==================== EMBEDDINGS (QWEN3-EMBEDDING 512d MRL) ====================
     EMBEDDING_PROVIDER: str = Field(
         default="local",
         description="Embedding provider: 'local' (SentenceTransformers)"
     )
     EMBEDDING_MODEL_NAME: str = Field(
-        default="all-MiniLM-L6-v2",
-        description="SentenceTransformers model name"
+        default="Qwen/Qwen3-Embedding-0.6B",
+        description="Embedding model name"
     )
     EMBEDDING_DIMENSION: int = Field(
-        default=384,
-        description="Embedding vector dimension (384 for all-MiniLM-L6-v2)"
+        default=512,
+        description="Embedding vector dimension with MRL truncation (512)"
     )
     EMBEDDING_BATCH_SIZE: int = Field(
         default=32,
