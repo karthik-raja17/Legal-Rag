@@ -1,13 +1,13 @@
 """
-Local Sentence-Transformers Embedder for Legal RAG.
-Runs Qwen/Qwen3-Embedding-0.6B with MRL (512-dim truncation) or any configured model with L2 normalization.
+Local SentenceTransformer Embedder.
+Generates dense vector embeddings using local Hugging Face / SentenceTransformer models
+with Matryoshka Representation Learning (MRL) dimension truncation and L2 normalization.
 """
 import logging
 from typing import List, Optional
 
 import torch
 from sentence_transformers import SentenceTransformer
-
 from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 
 class LocalEmbedder:
     """
-    Local embedding generator using sentence-transformers.
-    Supports Matryoshka Representation Learning (MRL) dimension truncation and L2 normalization.
+    Local embedding generator using SentenceTransformer.
+    Embeds documents and queries on GPU (CUDA) or CPU.
     """
 
     def __init__(
@@ -28,23 +28,17 @@ class LocalEmbedder:
     ):
         self.model_name = model_name or settings.EMBEDDING_MODEL_NAME
         self.dimension = dimension or settings.EMBEDDING_DIMENSION
+        self.device = device or settings.EMBEDDING_DEVICE
         self.batch_size = batch_size or settings.EMBEDDING_BATCH_SIZE
-
-        if device:
-            self.device = device
-        elif settings.EMBEDDING_DEVICE:
-            self.device = settings.EMBEDDING_DEVICE
-        else:
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._model = None
 
         logger.info(
-            f"Initializing LocalEmbedder: model='{self.model_name}', dim={self.dimension}, device='{self.device}'"
+            f"Initializing LocalEmbedder: model='{self.model_name}', "
+            f"dim={self.dimension}, device='{self.device}'"
         )
-        self._model: Optional[SentenceTransformer] = None
 
     @property
     def model(self) -> SentenceTransformer:
-        """Lazy-load the SentenceTransformer model."""
         if self._model is None:
             logger.info(f"Loading SentenceTransformer model '{self.model_name}'...")
             try:
@@ -61,11 +55,12 @@ class LocalEmbedder:
     ) -> List[List[float]]:
         """
         Generate normalized embeddings for a list of document strings with MRL truncation.
+        Uses torch.inference_mode() to minimize VRAM usage.
         """
         if not texts:
             return []
 
-        bs = batch_size or self.batch_size
+        bs = batch_size or self.batch_size or 16
         logger.debug(f"Generating embeddings for {len(texts)} texts (batch_size={bs})...")
 
         encode_kwargs = {
@@ -77,8 +72,19 @@ class LocalEmbedder:
         if self.dimension:
             encode_kwargs["truncate_dim"] = self.dimension
 
-        embeddings = self.model.encode(texts, **encode_kwargs)
-        return embeddings.tolist()
+        try:
+            with torch.inference_mode():
+                embeddings = self.model.encode(texts, **encode_kwargs)
+            return embeddings.tolist()
+        except torch.AcceleratorError as e:
+            logger.warning(f"CUDA OOM during embedding generation. Clearing cache and retrying on CPU/batch... ({e})")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            # Retry with smaller batch or CPU
+            encode_kwargs["batch_size"] = 8
+            with torch.inference_mode():
+                embeddings = self.model.encode(texts, **encode_kwargs)
+            return embeddings.tolist()
 
     def embed_query(self, query: str) -> List[float]:
         """
@@ -95,5 +101,6 @@ class LocalEmbedder:
         if self.dimension:
             encode_kwargs["truncate_dim"] = self.dimension
 
-        embedding = self.model.encode(query, **encode_kwargs)
+        with torch.inference_mode():
+            embedding = self.model.encode(query, **encode_kwargs)
         return embedding.tolist()

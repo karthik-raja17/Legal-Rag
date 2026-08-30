@@ -9,9 +9,11 @@ python-dotenv>=1.0.0
 faiss-cpu>=1.9.0
 sentence-transformers>=3.0.0
 torch>=2.0.0
+torchvision>=0.18.0
 rank_bm25>=0.2.2
 
-# Document & PDF Processing
+# Document & PDF Processing with Dedoc
+dedoc>=2.7.0
 PyMuPDF>=1.24.0
 pdfplumber>=0.10.0
 Pillow>=10.0.0
@@ -21,7 +23,7 @@ tiktoken>=0.8.0
 filelock>=3.13.0
 python-multipart>=0.0.9
 
-# NLP (French)
+# NLP (English)
 spacy>=3.7.0
 
 # Network & Utilities

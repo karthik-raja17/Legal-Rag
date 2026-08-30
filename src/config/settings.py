@@ -118,7 +118,7 @@ class Settings(BaseSettings):
         description="RRF smoothing constant (typically 60)"
     )
     HYBRID_TOP_K: int = Field(
-        default=5,
+        default=10,
         description="Default number of final results to return from hybrid search"
     )
     BM25_CACHE_TTL_SECONDS: int = Field(
@@ -128,8 +128,16 @@ class Settings(BaseSettings):
 
     # ==================== RERANKER ====================
     RERANKER_TYPE: str = Field(
-        default="none",
-        description="Reranker type: 'none' or 'local_cross_encoder'"
+        default="local_cross_encoder",
+        description="Reranker type: 'local_cross_encoder' or 'none'"
+    )
+    RERANKER_MODEL_NAME: str = Field(
+        default="cross-encoder/ms-marco-MiniLM-L-6-v2",
+        description="Local cross-encoder model for re-ranking"
+    )
+    RERANKER_CANDIDATE_K: int = Field(
+        default=60,
+        description="Number of candidates retrieved from hybrid search before reranking (top 60)"
     )
 
     # ==================== QUERY EXPANSION ====================

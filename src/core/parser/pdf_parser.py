@@ -49,11 +49,11 @@ class PDFParser:
 
     def __init__(
         self,
-        use_ocr: bool = True,
-        use_dedoc: bool = True,
-        extract_tables: bool = True,
-        extract_figures: bool = True,
-        semantic_enrichment: bool = True,
+        use_ocr: bool = False,
+        use_dedoc: bool = False,
+        extract_tables: bool = False,
+        extract_figures: bool = False,
+        semantic_enrichment: bool = False,
         language: str = "en",
         cache_dir: Optional[str] = None,
         ocr_cache_dir: Optional[str] = None,

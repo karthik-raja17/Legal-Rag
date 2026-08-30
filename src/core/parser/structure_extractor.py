@@ -15,7 +15,7 @@ from filelock import FileLock
 # Dedoc import (graceful fallback)
 try:
     from dedoc import DedocManager
-    from dedoc.data_structures import Document, Node
+    from dedoc.data_structures import ParsedDocument, TreeNode
     DEDOC_AVAILABLE = True
 except ImportError:
     DEDOC_AVAILABLE = False
@@ -302,10 +302,17 @@ class StructureExtractor:
                 tmp.write(pdf_content)
                 tmp_path = tmp.name
             try:
-                dedoc_result = self.dedoc_manager.parse_document(
-                    tmp_path,
-                    parameters=self.dedoc_parameters,
-                )
+                # Dedoc 2.7 local parse
+                if hasattr(self.dedoc_manager, "parse"):
+                    dedoc_result = self.dedoc_manager.parse(
+                        tmp_path,
+                        parameters=self.dedoc_parameters,
+                    )
+                else:
+                    dedoc_result = self.dedoc_manager.parse_document(
+                        tmp_path,
+                        parameters=self.dedoc_parameters,
+                    )
                 return self._convert_dedoc_to_structure(dedoc_result)
             finally:
                 try:
@@ -318,8 +325,6 @@ class StructureExtractor:
 
     def _convert_dedoc_to_structure(self, dedoc_result) -> Dict:
         logger.info(f"Converting Dedoc result of type {type(dedoc_result)}")
-        if isinstance(dedoc_result, dict):
-            logger.info(f"Dedoc result keys: {dedoc_result.keys()}")
         root = {
             "section_id": "root",
             "level": -1,
@@ -331,28 +336,25 @@ class StructureExtractor:
             "page": 1,
         }
 
-        # The real dedoc REST API (v2.7, confirmed from a live response) nests
-        # the structure tree at content.structure, not at the top level, and
-        # each node's own children live under "subparagraphs", not "children" --
-        # this doesn't match the SDK-object shape the original code assumed.
         dedoc_tree = None
-        if isinstance(dedoc_result, dict) and "content" in dedoc_result:
+        if hasattr(dedoc_result, "content") and hasattr(dedoc_result.content, "structure"):
+            dedoc_tree = dedoc_result.content.structure
+            logger.info("Dedoc result had content.structure (ParsedDocument)")
+        elif isinstance(dedoc_result, dict) and "content" in dedoc_result:
             content = dedoc_result.get("content") or {}
             if isinstance(content, dict) and "structure" in content:
                 dedoc_tree = content["structure"]
-                logger.info("Dedoc result had content.structure")
-        if dedoc_tree is None and hasattr(dedoc_result, "structure"):
+                logger.info("Dedoc result had content.structure dict")
+        elif hasattr(dedoc_result, "structure"):
             dedoc_tree = dedoc_result.structure
             logger.info("Dedoc result had 'structure' attribute")
-        if dedoc_tree is None and isinstance(dedoc_result, dict) and "structure" in dedoc_result:
+        elif isinstance(dedoc_result, dict) and "structure" in dedoc_result:
             dedoc_tree = dedoc_result["structure"]
             logger.info("Dedoc result had top-level 'structure' key")
 
         if dedoc_tree is not None:
-            # The top node from Dedoc is itself the document root (paragraph_type
-            # "root") -- we want ITS subparagraphs as our root's children, not
-            # to wrap the whole tree one level too deep.
-            root["children"] = self._traverse_dedoc(dedoc_tree.get("subparagraphs", []) if isinstance(dedoc_tree, dict) else dedoc_tree)
+            subparagraphs = getattr(dedoc_tree, "subparagraphs", None) or (dedoc_tree.get("subparagraphs", []) if isinstance(dedoc_tree, dict) else dedoc_tree)
+            root["children"] = self._traverse_dedoc(subparagraphs)
         else:
             logger.warning("Dedoc result has no recognizable structure field")
             root["children"] = []

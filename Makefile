@@ -1,4 +1,4 @@
-.PHONY: run test ingest ingest-cuad clean
+.PHONY: run test ingest ingest-cuad eval-retrieval run-all clean
 
 # Run the FastAPI server locally
 run:
@@ -12,11 +12,21 @@ test:
 # Ingest sample contract into FAISS index
 ingest:
 	python scripts/create_test_pdf.py
-	python scripts/local_ingest.py --pdf data/sample_contract.pdf --doc-id msa_acme_01 --site "Delaware Headquarters"
+	python scripts/pipeline/ingest.py --pdf data/sample_contract.pdf
+	python scripts/pipeline/index_documents.py
 
-# Ingest all CUAD contracts in data/cuad/pdfs
+# Ingest all CUAD contracts across Part_I, Part_II, Part_III into storage & FAISS
 ingest-cuad:
-	python scripts/local_ingest.py --dir data/cuad/pdfs/Part_I/Affiliate_Agreements --site "Affiliate Agreements"
+	python scripts/pipeline/ingest.py --cuad
+	python scripts/pipeline/index_documents.py
+
+# Run retrieval benchmark evaluation (Recall@1/5/10, Precision@1/5/10, MRR, nDCG, MAP)
+eval-retrieval:
+	python scripts/eval/evaluate_retrieval_metrics.py --mode hybrid --candidate-k 60 --top-k 10
+
+# Master pipeline orchestrator (Ingest, Index, Benchmark & QA Demo)
+run-all:
+	python scripts/run_all.py --cuad --candidate-k 60 --top-k 10
 
 # Clean caches and temporary build artifacts
 clean:

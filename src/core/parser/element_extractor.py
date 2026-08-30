@@ -47,25 +47,17 @@ class ElementExtractor:
 
     def __init__(
         self,
-        extract_tables: bool = True,
+        extract_tables: bool = False,
         extract_figures: bool = False,
         table_methods: List[str] = None,
         cache_dir: Optional[str] = None,
-        max_pages_for_ocr: int = 50,  # For figure extraction with vision models
+        max_pages_for_ocr: int = 50,
     ):
-        """
-        Args:
-            extract_tables: Whether to extract tables.
-            extract_figures: Whether to attempt figure/graph extraction.
-            table_methods: Ordered list of methods to try: ['camelot_lattice', 'camelot_stream', 'pdfplumber', 'tabula'].
-                           Defaults to all available.
-            cache_dir: Directory to cache extracted elements (JSON).
-            max_pages_for_ocr: Max pages to process for figure extraction (to limit cost).
-        """
         self.extract_tables = extract_tables
         self.extract_figures = extract_figures
         self.cache_dir = cache_dir
         self.max_pages_for_ocr = max_pages_for_ocr
+        self.table_methods = table_methods or ["pdfplumber"]
 
         if self.cache_dir:
             os.makedirs(self.cache_dir, exist_ok=True)
@@ -223,6 +215,22 @@ class ElementExtractor:
     # -------------------------------------------------------------------------
     # Table Extraction
     # -------------------------------------------------------------------------
+
+    def extract_tables_conditional(self, pdf_path: str) -> List[Dict]:
+        """Runs ONLY if pdfplumber detects tables. Fast (~0.1s) and skips heavy subprocesses."""
+        import pdfplumber
+        tables = []
+        try:
+            with pdfplumber.open(pdf_path) as pdf:
+                for page in pdf.pages:
+                    if page.find_tables():
+                        ext_table = page.extract_table()
+                        if ext_table:
+                            md = "\n".join(["| " + " | ".join(str(cell or '') for cell in row) + " |" for row in ext_table if row])
+                            tables.append({"page": page.page_number, "markdown": md})
+        except Exception as e:
+            logger.warning(f"Conditional table extraction failed for {pdf_path}: {e}")
+        return tables
 
     def _extract_tables(self, pdf_content: bytes) -> List[Dict]:
         """

@@ -101,6 +101,16 @@ class FAISSClient:
             self._chunk_id_to_int = {}
             self._next_id = 0
 
+    def reset_collection(self) -> None:
+        """Reset and clear FAISS collection to an empty state."""
+        with self._lock:
+            self._index = self._create_new_index()
+            self._id_to_data = {}
+            self._chunk_id_to_int = {}
+            self._next_id = 0
+            self.save()
+            logger.info(f"FAISS collection '{self.collection_name}' reset successfully.")
+
     def save(self) -> None:
         """Persist FAISS index and metadata to disk."""
         with self._lock:

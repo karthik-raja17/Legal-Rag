@@ -3,10 +3,13 @@ CLI Tool for Local Document Ingestion into FAISS.
 
 Usage:
   # Ingest a single PDF:
-  python scripts/local_ingest.py --pdf data/sample_contract.pdf --doc-id bail_001 --site Site_Lyon
+  python scripts/local_ingest.py --pdf data/sample_contract.pdf --doc-id msa_001 --site Delaware
+
+  # Ingest all CUAD contracts (Part_I, Part_II, Part_III):
+  python scripts/local_ingest.py --cuad
 
   # Ingest a folder of PDFs:
-  python scripts/local_ingest.py --dir data/contracts/
+  python scripts/local_ingest.py --dir data/cuad/pdfs/Part_I/Affiliate_Agreements/
 """
 import argparse
 import logging
@@ -44,7 +47,12 @@ def ingest_file(
 
     # Parse document structure
     parsed_doc = parser.parse(content, doc_id)
-    storage.save_parsed_json(doc_id, parsed_doc.to_dict())
+    doc_dict = parsed_doc.to_dict()
+    if "metadata" not in doc_dict or not doc_dict["metadata"]:
+        doc_dict["metadata"] = {}
+    doc_dict["metadata"]["site_name"] = site_name
+    doc_dict["metadata"]["source_path"] = str(file_path)
+    storage.save_parsed_json(doc_id, doc_dict)
 
     # Index into FAISS
     chunk_count = indexer.index_document(parsed_doc, doc_id, site_name=site_name)
@@ -57,17 +65,20 @@ def main():
     parser = argparse.ArgumentParser(description="Ingest local PDF contracts into FAISS index.")
     parser.add_argument("--pdf", type=str, help="Path to a single PDF contract.")
     parser.add_argument("--dir", type=str, help="Path to directory containing PDF contracts.")
+    parser.add_argument("--cuad", action="store_true", help="Ingest all CUAD contracts across Part_I, Part_II, Part_III.")
+    parser.add_argument("--parts", nargs="+", choices=["Part_I", "Part_II", "Part_III"], default=None, help="Specific CUAD parts to ingest.")
+    parser.add_argument("--limit", type=int, default=None, help="Limit number of PDFs to ingest.")
     parser.add_argument("--doc-id", type=str, default=None, help="Optional Document ID.")
-    parser.add_argument("--site", type=str, default="local_site", help="Site / project name.")
+    parser.add_argument("--site", type=str, default="CUAD_Contracts", help="Site / project name.")
     args = parser.parse_args()
 
-    if not args.pdf and not args.dir:
-        parser.error("Must specify either --pdf or --dir")
+    if not args.pdf and not args.dir and not args.cuad and not args.parts:
+        parser.error("Must specify --pdf, --dir, --cuad, or --parts")
 
     faiss_client = FAISSClient()
     embedder = LocalEmbedder()
     indexer = Indexer(vector_client=faiss_client, embedder=embedder)
-    doc_parser = PDFParser(use_ocr=False, extract_tables=True, semantic_enrichment=True)
+    doc_parser = PDFParser(use_ocr=False, use_dedoc=True, extract_tables=True, semantic_enrichment=True)
     storage = LocalStorageClient()
 
     total_chunks = 0
@@ -77,11 +88,25 @@ def main():
             sys.exit(1)
         doc_id = args.doc_id or os.path.splitext(os.path.basename(args.pdf))[0]
         total_chunks += ingest_file(args.pdf, doc_id, args.site, doc_parser, indexer, storage)
+    elif args.cuad or args.parts:
+        from scripts.pipeline.ingest import collect_cuad_pdf_files
+        pdf_items = collect_cuad_pdf_files(
+            cuad_base_dir=Path("data/cuad/pdfs"),
+            parts=args.parts or ["Part_I", "Part_II", "Part_III"]
+        )
+        if args.limit and args.limit > 0:
+            pdf_items = pdf_items[:args.limit]
+        logger.info(f"Ingesting {len(pdf_items)} CUAD contract(s) across parts...")
+        for p, category in pdf_items:
+            doc_id = p.stem
+            total_chunks += ingest_file(str(p), doc_id, category, doc_parser, indexer, storage)
     elif args.dir:
         if not os.path.isdir(args.dir):
             logger.error(f"Directory not found: {args.dir}")
             sys.exit(1)
-        pdf_files = list(Path(args.dir).glob("*.pdf"))
+        pdf_files = sorted(list(Path(args.dir).rglob("*.pdf")))
+        if args.limit and args.limit > 0:
+            pdf_files = pdf_files[:args.limit]
         logger.info(f"Found {len(pdf_files)} PDF files in {args.dir}")
         for pdf_path in pdf_files:
             doc_id = os.path.splitext(pdf_path.name)[0]
@@ -93,4 +118,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
