@@ -80,6 +80,47 @@ def is_chunk_relevant(chunk_text: str, answers: List[Dict[str, Any]], threshold:
     return False
 
 
+# --- FIX: Semantic Fallback for Debugging (Strict Scoring) ---
+_eval_embedder = None
+
+def get_eval_embedder():
+    global _eval_embedder
+    if _eval_embedder is None:
+        _eval_embedder = LocalEmbedder()
+    return _eval_embedder
+
+
+def is_chunk_relevant_hybrid(chunk_text: str, answers: List[Dict], threshold: float = 0.65) -> bool:
+    """
+    Hybrid checker: Strict lexical check first. If lexical fails, check semantic similarity
+    but ALWAYS return False to keep final scores strict. Only logs semantic matches for debugging.
+    """
+    # 1. Strict Lexical Check (Claire's requirement)
+    if is_chunk_relevant(chunk_text, answers, threshold):
+        return True
+    
+    # 2. Semantic Check (Debug only - does NOT affect score)
+    embedder = get_eval_embedder()
+    for ans in answers:
+        ans_text = ans.get("text", "")
+        if not ans_text:
+            continue
+        try:
+            chunk_emb = embedder.embed_query(chunk_text)
+            ans_emb = embedder.embed_query(ans_text)
+            similarity = float(np.dot(chunk_emb, ans_emb))  # Cosine (L2 normalized)
+            
+            if similarity > 0.85:
+                # Log the false negative to a debug file
+                with open("semantic_false_negatives.log", "a", encoding="utf-8") as f:
+                    f.write(f"SEMANTIC MATCH ONLY (SIM={similarity:.3f}): '{chunk_text[:50]}...' vs '{ans_text[:50]}...'\n")
+                break
+        except Exception:
+            pass
+    
+    return False  # Strict evaluator fails safely for scoring
+
+
 def compute_dcg_at_k(relevance: List[int], k: int) -> float:
     """Discounted Cumulative Gain at rank k."""
     dcg = 0.0
@@ -275,7 +316,7 @@ async def evaluate_cuad_retrieval(
             leaf_text = c.get("text", "")
             parent_id = (c.get("metadata") or {}).get("parent_id")
             parent_text = docstore.get(parent_id) if parent_id else None
-            is_rel = is_chunk_relevant(leaf_text, answers) or (parent_text and is_chunk_relevant(parent_text, answers))
+            is_rel = is_chunk_relevant_hybrid(leaf_text, answers) or (parent_text and is_chunk_relevant_hybrid(parent_text, answers))
             relevance_vector.append(1 if is_rel else 0)
         # Pad to top_k_final
         relevance_vector += [0] * (top_k_final - len(relevance_vector))

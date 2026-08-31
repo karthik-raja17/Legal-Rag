@@ -3,7 +3,6 @@
 Step 2: Document Indexing Pipeline
 Reads parsed contract JSONs from data/storage/parsed/, generates 512d MRL embeddings
 with Qwen3-Embedding-0.6B for leaf chunks, and indexes vectors into FAISS HNSW (M=24, efC=100, efS=100).
-Supports both lightweight Small-to-Big chunks and legacy AST structures.
 """
 import argparse
 import json
@@ -20,11 +19,8 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from src.config.settings import settings
-from src.core.parser.pdf_parser import ParsedDocument
-from src.core.parser.chunker import DocumentChunker
 from src.core.embedding.local_embedder import LocalEmbedder
 from src.core.indexer.faiss_client import FAISSClient
-from src.core.indexer.indexer import Indexer
 from src.core.storage.local_storage import LocalStorageClient
 
 logging.basicConfig(
@@ -99,7 +95,6 @@ def run_indexing(
         faiss_client.reset_collection()
 
     embedder = LocalEmbedder()
-    legacy_indexer = Indexer(vector_client=faiss_client, embedder=embedder)
 
     parsed_dir = Path("data/storage/parsed")
     if not parsed_dir.exists():
@@ -125,34 +120,13 @@ def run_indexing(
                 doc_dict = json.load(f)
 
             t0 = time.time()
-
-            # Path A: Lightweight parser output
-            if "chunks" in doc_dict:
-                chunk_count = index_lightweight_chunks(doc_id, doc_dict, embedder, faiss_client)
-            # Path B: Legacy AST parsed output
-            else:
-                parsed_doc = ParsedDocument(
-                    document_id=doc_id,
-                    metadata=doc_dict.get("metadata", {}),
-                    structure=doc_dict.get("structure", {}),
-                    elements=doc_dict.get("elements", {}),
-                    raw_text=doc_dict.get("raw_text", ""),
-                    processing_time=doc_dict.get("processing_time", 0.0),
-                    errors=doc_dict.get("errors", []),
-                    warnings=doc_dict.get("warnings", []),
-                    ocr_used=doc_dict.get("ocr_used", False),
-                )
-                chunk_count = legacy_indexer.index_document(
-                    parsed_doc,
-                    document_id=doc_id,
-                    site_name=doc_dict.get("metadata", {}).get("site_name", "CUAD_Contracts")
-                )
-
+            chunk_count = index_lightweight_chunks(doc_id, doc_dict, embedder, faiss_client)
             elapsed = time.time() - t0
+
             storage.update_status(doc_id, "indexed", f"Indexed {chunk_count} chunks into FAISS in {elapsed:.2f}s", chunk_count=chunk_count)
             total_indexed_chunks += chunk_count
 
-            if idx % 10 == 0 or idx == len(target_files):
+            if idx % 25 == 0 or idx == len(target_files):
                 logger.info(f"[{idx}/{len(target_files)}] Indexed {doc_id}: {chunk_count} chunks (Total so far: {total_indexed_chunks})")
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()

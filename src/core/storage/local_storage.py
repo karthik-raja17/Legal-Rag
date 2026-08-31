@@ -7,7 +7,7 @@ import logging
 import os
 import threading
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from src.config.settings import settings
 
@@ -124,4 +124,10 @@ class LocalStorageClient:
             except Exception as e:
                 logger.error(f"Error reading status file: {e}")
                 return {}
+
+    def list_documents(self) -> List[Dict[str, Any]]:
+        """List all document metadata dictionaries."""
+        with self._lock:
+            statuses = self.get_all_statuses()
+            return list(statuses.values())
 

@@ -115,13 +115,50 @@ def parse_and_chunk_text(
                 })
                 chunk_counter += 1
         else:
-            # Fallback: split by paragraphs within the large section
-            paras = parent_text.split("\n\n")
-            current_buf = []
-            current_len = 0
+            # --- FIX: High-Signal Intro Chunk (First 3 Sentences) ---
+            import re
+            # Split on sentence boundaries (. ! ?) followed by space
+            sentence_split = re.split(r'(?<=[.!?])\s+', parent_text)
+            
+            # Extract first 3 sentences as "Intro Leaf"
+            intro_text = " ".join(sentence_split[:3])
+            if intro_text:
+                chunks.append({
+                    "leaf_id": f"{doc_prefix}chunk_{chunk_counter}",
+                    "leaf_text": f"[{breadcrumb} | INTRO]\n{intro_text}",
+                    "parent_id": parent_id,
+                    "parent_text": parent_text,
+                    "breadcrumb": breadcrumb,
+                    "document_id": doc_id or "unknown"
+                })
+                chunk_counter += 1
+                remaining_text = " ".join(sentence_split[3:])
+            else:
+                remaining_text = parent_text
 
-            for p in paras:
-                if current_len + len(p) > max_leaf_chars and current_buf:
+            # Existing fallback: split remaining text by paragraphs
+            if remaining_text:
+                paras = remaining_text.split("\n\n")
+                current_buf = []
+                current_len = 0
+                for p in paras:
+                    if current_len + len(p) > max_leaf_chars and current_buf:
+                        leaf_body = "\n\n".join(current_buf)
+                        chunks.append({
+                            "leaf_id": f"{doc_prefix}chunk_{chunk_counter}",
+                            "leaf_text": f"[{breadcrumb}]\n{leaf_body}",
+                            "parent_id": parent_id,
+                            "parent_text": parent_text,
+                            "breadcrumb": breadcrumb,
+                            "document_id": doc_id or "unknown"
+                        })
+                        chunk_counter += 1
+                        current_buf = []
+                        current_len = 0
+                    current_buf.append(p)
+                    current_len += len(p)
+                
+                if current_buf:
                     leaf_body = "\n\n".join(current_buf)
                     chunks.append({
                         "leaf_id": f"{doc_prefix}chunk_{chunk_counter}",
@@ -132,22 +169,6 @@ def parse_and_chunk_text(
                         "document_id": doc_id or "unknown"
                     })
                     chunk_counter += 1
-                    current_buf = []
-                    current_len = 0
-                current_buf.append(p)
-                current_len += len(p)
-
-            if current_buf:
-                leaf_body = "\n\n".join(current_buf)
-                chunks.append({
-                    "leaf_id": f"{doc_prefix}chunk_{chunk_counter}",
-                    "leaf_text": f"[{breadcrumb}]\n{leaf_body}",
-                    "parent_id": parent_id,
-                    "parent_text": parent_text,
-                    "breadcrumb": breadcrumb,
-                    "document_id": doc_id or "unknown"
-                })
-                chunk_counter += 1
 
     return chunks, full_text
 

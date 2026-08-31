@@ -1,19 +1,20 @@
-# src/core/parser/__init__.py
 """
-PDF Parser package for legal contract extraction.
+Lightweight Legal Contract Parser Module.
+Replaces legacy multi-minute Dedoc/Camelot/OCR pipeline with high-speed (<0.03s)
+PyMuPDF extraction and stateful regex hierarchy builder.
 """
-
-from src.core.parser.pdf_parser import PDFParser, ParsedDocument
-from src.core.parser.text_extractor import TextExtractor
-from src.core.parser.structure_extractor import StructureExtractor
-from src.core.parser.element_extractor import ElementExtractor
-from src.core.parser.semantic_enricher import SemanticEnricher
+from src.core.parser.lightweight_parser import (
+    parse_and_chunk_contract,
+    parse_and_chunk_text,
+    HEADING_REGEX,
+    SUBCLAUSE_REGEX,
+    PREAMBLE_REGEX,
+)
 
 __all__ = [
-    "PDFParser",
-    "ParsedDocument",
-    "TextExtractor",
-    "StructureExtractor",
-    "ElementExtractor",
-    "SemanticEnricher"
+    "parse_and_chunk_contract",
+    "parse_and_chunk_text",
+    "HEADING_REGEX",
+    "SUBCLAUSE_REGEX",
+    "PREAMBLE_REGEX",
 ]

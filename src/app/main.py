@@ -24,11 +24,12 @@ from fastapi.staticfiles import StaticFiles
 
 from src.config.settings import settings
 from src.core.indexer.faiss_client import FAISSClient
-from src.core.indexer.indexer import Indexer
 from src.core.embedding.local_embedder import LocalEmbedder
 from src.core.llm.ollama_client import OllamaClient
 from src.core.storage.local_storage import LocalStorageClient
-from src.core.parser.pdf_parser import PDFParser
+from src.core.docstore import LocalDocStore
+from src.core.parser.lightweight_parser import parse_and_chunk_contract, parse_and_chunk_text
+from src.core.retrieval.context_builder import ContextBuilder, assemble_context
 from src.core.retrieval.hybrid_retriever import HybridRetriever
 from src.core.retrieval.reranker import LocalReranker
 from src.core.retrieval.query_expander import QueryExpander
@@ -85,13 +86,12 @@ _faiss_client: Optional[FAISSClient] = None
 _embedder: Optional[LocalEmbedder] = None
 _ollama_client: Optional[OllamaClient] = None
 _local_storage: Optional[LocalStorageClient] = None
-_indexer: Optional[Indexer] = None
+_docstore: Optional[LocalDocStore] = None
 _hybrid_retriever: Optional[HybridRetriever] = None
 _rewriter: Optional[QueryRewriter] = None
 _query_expander: Optional[QueryExpander] = None
 _query_analyzer: Optional[QueryAnalyzer] = None
 _reranker: Optional[LocalReranker] = None
-_parser: Optional[PDFParser] = None
 
 
 def get_faiss_client() -> FAISSClient:
@@ -122,11 +122,11 @@ def get_local_storage() -> LocalStorageClient:
     return _local_storage
 
 
-def get_indexer() -> Indexer:
-    global _indexer
-    if _indexer is None:
-        _indexer = Indexer(vector_client=get_faiss_client(), embedder=get_embedder())
-    return _indexer
+def get_docstore() -> LocalDocStore:
+    global _docstore
+    if _docstore is None:
+        _docstore = LocalDocStore()
+    return _docstore
 
 
 def get_hybrid_retriever() -> HybridRetriever:
@@ -165,22 +165,6 @@ def get_reranker() -> LocalReranker:
     if _reranker is None:
         _reranker = LocalReranker()
     return _reranker
-
-
-def get_parser() -> PDFParser:
-    global _parser
-    if _parser is None:
-        _parser = PDFParser(
-            use_ocr=False,  # default to digital extraction locally; fallback available
-            use_dedoc=bool(settings.DEDOC_SERVICE_URL),
-            extract_tables=True,
-            extract_figures=False,
-            semantic_enrichment=True,
-            language="fr",
-            cache_dir=settings.PARSER_CACHE_DIR,
-            dedoc_url=settings.DEDOC_SERVICE_URL,
-        )
-    return _parser
 
 
 # ----------------------------------------------------------------------------
@@ -250,26 +234,32 @@ async def get_dropdown_options():
         metadatas = chunks.get("metadatas", [])
 
         sites = set()
-        documents = {}
+        doc_ids = set()
+
         for meta in metadatas:
-            doc_id = meta.get("document_id")
-            site = meta.get("site_name")
-            if doc_id:
-                documents[doc_id] = {
-                    "id": doc_id,
-                    "label": doc_id,
-                    "site_name": site or "Unknown",
-                }
-            if site and site not in ["SITE_NON_TROUVE", "unknown"]:
-                sites.add(site)
+            if isinstance(meta, dict):
+                site = meta.get("site_name")
+                doc_id = meta.get("document_id")
+                if site:
+                    sites.add(site)
+                if doc_id:
+                    doc_ids.add(doc_id)
+
+        # Also get from storage status files
+        storage = get_local_storage()
+        status_docs = storage.list_documents()
+        for d in status_docs:
+            if d.get("document_id"):
+                doc_ids.add(d["document_id"])
 
         return {
-            "sites": sorted(list(sites)),
-            "documents": sorted(list(documents.values()), key=lambda x: x["label"]),
+            "site_names": sorted(list(sites)),
+            "document_ids": sorted(list(doc_ids)),
+            "total_documents": len(doc_ids),
         }
     except Exception as e:
-        logger.error(f"Failed to fetch dropdown options: {e}")
-        return {"sites": [], "documents": []}
+        logger.error(f"Error fetching dropdown options: {e}", exc_info=True)
+        return {"site_names": [], "document_ids": [], "total_documents": 0}
 
 
 # ----------------------------------------------------------------------------
@@ -310,26 +300,104 @@ async def parse_document(
         raise HTTPException(400, "Could not read uploaded file")
 
     storage = get_local_storage()
+    docstore = get_docstore()
+    
+    # 1. Save raw PDF
     storage.save_pdf(doc_id, content)
     storage.update_status(doc_id, "parsing", "Parsing PDF structure...")
 
+    # 2. Save temporary PDF to run fast lightweight parser
+    import tempfile
+    import time
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_pdf:
+        tmp_pdf.write(content)
+        tmp_pdf_path = tmp_pdf.name
+
     try:
-        parser = get_parser()
-        parsed_doc = await asyncio.to_thread(parser.parse, content, doc_id)
-        storage.save_parsed_json(doc_id, parsed_doc.to_dict())
+        t0 = time.time()
+        chunks, full_text = await asyncio.to_thread(parse_and_chunk_contract, tmp_pdf_path, doc_id)
+        
+        # Save parent texts into DocStore
+        parent_dict = {}
+        for c in chunks:
+            p_id = c.get("parent_id")
+            p_text = c.get("parent_text")
+            if p_id and p_text:
+                parent_dict[p_id] = p_text
+        if parent_dict:
+            docstore.set_batch(parent_dict)
+
+        # Defined terms
+        import re
+        defined_terms = set(
+            term for term in re.findall(r'\b([A-Z]{2,}(?:\s+[A-Z]{2,})*)\b', full_text)
+            if term not in ["THE", "AND", "OR", "FOR", "WITH", "UNDER", "THIS", "ANY", "ALL"]
+        )
+
+        elapsed = time.time() - t0
+        doc_dict = {
+            "document_id": doc_id,
+            "raw_text": full_text,
+            "chunks": chunks,
+            "metadata": {
+                "category": site_name or "Uploaded",
+                "site_name": site_name or "Uploaded",
+                "source_path": file.filename,
+                "num_chunks": len(chunks),
+                "num_parents": len(parent_dict),
+                "defined_terms": list(defined_terms)[:50],
+                "processing_time": elapsed,
+                "parser": "lightweight_regex_ast"
+            },
+            "processing_time": elapsed
+        }
+        storage.save_parsed_json(doc_id, doc_dict)
     except Exception as e:
         logger.error(f"Parsing failed for {doc_id}: {e}", exc_info=True)
         storage.update_status(doc_id, "failed", f"Parsing error: {str(e)}")
         raise HTTPException(500, f"Parsing error: {str(e)}")
+    finally:
+        if os.path.exists(tmp_pdf_path):
+            os.remove(tmp_pdf_path)
 
     if sync:
-        return JSONResponse(content=parsed_doc.to_dict())
+        return JSONResponse(content=doc_dict)
 
-    # Index directly into FAISS
+    # 3. Index directly into FAISS
     storage.update_status(doc_id, "indexing", "Indexing chunks into FAISS...")
     try:
-        indexer = get_indexer()
-        chunk_count = await asyncio.to_thread(indexer.index_document, parsed_doc, doc_id, site_name)
+        faiss_client = get_faiss_client()
+        embedder = get_embedder()
+
+        ids = []
+        texts_to_embed = []
+        metadatas = []
+
+        for c in chunks:
+            leaf_id = c.get("leaf_id") or f"{doc_id}_{len(ids)}"
+            leaf_text = c.get("leaf_text") or c.get("text", "")
+            if not leaf_text.strip():
+                continue
+            ids.append(leaf_id)
+            texts_to_embed.append(leaf_text)
+            metadatas.append({
+                "chunk_id": leaf_id,
+                "document_id": doc_id,
+                "parent_id": c.get("parent_id", ""),
+                "breadcrumb": c.get("breadcrumb", ""),
+                "site_name": site_name or "Uploaded",
+                "char_count": len(leaf_text)
+            })
+
+        if ids:
+            embeddings = await asyncio.to_thread(embedder.embed_documents, texts_to_embed, 16)
+            faiss_client.add_documents(
+                ids=ids,
+                embeddings=embeddings,
+                metadatas=metadatas,
+                documents=texts_to_embed
+            )
+        chunk_count = len(ids)
         storage.update_status(doc_id, "indexed", "Successfully indexed into FAISS", chunk_count=chunk_count)
     except Exception as e:
         logger.error(f"Indexing failed for {doc_id}: {e}", exc_info=True)

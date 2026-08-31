@@ -21,9 +21,8 @@ from typing import List, Optional, Dict, Any, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from src.config.settings import settings
-from src.core.lightweight_parser import parse_and_chunk_contract, parse_and_chunk_text
+from src.core.parser.lightweight_parser import parse_and_chunk_contract, parse_and_chunk_text
 from src.core.docstore import LocalDocStore
-from src.core.parser.pdf_parser import PDFParser, ParsedDocument
 from src.core.storage.local_storage import LocalStorageClient
 
 logging.basicConfig(
@@ -86,6 +85,16 @@ def parse_and_store_lightweight(
             "processing_time": elapsed
         }
 
+        # --- FIX: Extract Defined Terms (ALL CAPS) for metadata ---
+        import re
+        # Regex to catch ALL CAPS terms (e.g., "COMPANY", "EFFECTIVE DATE", "AGREEMENT")
+        # Exclude common stop words like "THE", "AND", "OR"
+        defined_terms = set(
+            term for term in re.findall(r'\b([A-Z]{2,}(?:\s+[A-Z]{2,})*)\b', full_text)
+            if term not in ["THE", "AND", "OR", "FOR", "WITH", "UNDER", "THIS", "ANY", "ALL"]
+        )
+        doc_dict["metadata"]["defined_terms"] = list(defined_terms)[:50]  # Top 50 terms to avoid bloat
+
         storage.save_parsed_json(doc_id, doc_dict)
         storage.update_status(doc_id, "parsed", f"Parsed in {elapsed:.4f}s ({len(chunks)} chunks)")
         return doc_dict
@@ -141,6 +150,14 @@ def parse_and_store_text_contract(
             },
             "processing_time": elapsed
         }
+
+        # --- FIX: Extract Defined Terms (ALL CAPS) for metadata ---
+        import re
+        defined_terms = set(
+            term for term in re.findall(r'\b([A-Z]{2,}(?:\s+[A-Z]{2,})*)\b', full_text)
+            if term not in ["THE", "AND", "OR", "FOR", "WITH", "UNDER", "THIS", "ANY", "ALL"]
+        )
+        doc_dict["metadata"]["defined_terms"] = list(defined_terms)[:50]
 
         storage.save_parsed_json(doc_id, doc_dict)
         storage.update_status(doc_id, "parsed", f"Parsed in {elapsed:.4f}s ({len(chunks)} chunks)")

@@ -62,6 +62,50 @@ class ContextBuilder:
                 else:
                     full_context_blocks.append(f"--- CONTEXT [{idx}]: {breadcrumb} ---\n{info['leaf_text']}")
 
+        # --- FIX: Inject Global Context (Preamble & Definitions) ---
+        global_context_blocks = []
+        
+        # Determine document id prefix from hits if present
+        doc_id = None
+        for h in hits:
+            meta = h.get("metadata", {}) or {}
+            if meta.get("document_id"):
+                doc_id = meta.get("document_id")
+                break
+
+        sec_0_candidates = [f"{doc_id}_sec_0", "sec_0"] if doc_id else ["sec_0"]
+        sec_1_candidates = [f"{doc_id}_sec_1", "sec_1"] if doc_id else ["sec_1"]
+
+        # 1. Always try to add Preamble (sec_0) for context
+        if not any("PREAMBLE" in info.get("breadcrumb", "") for info in unique_parents.values()):
+            preamble_text = None
+            for k in sec_0_candidates:
+                preamble_text = self.docstore.get(k)
+                if preamble_text:
+                    break
+            if preamble_text:
+                global_context_blocks.append(f"--- GLOBAL CONTEXT (Preamble) ---\n{preamble_text}")
+        
+        # 2. Scan hits for defined terms (ALL CAPS) to force-inject Definitions
+        # Regex to catch defined terms like "COMPANY" or "EFFECTIVE DATE"
+        import re
+        defined_term_pattern = re.compile(r'\b([A-Z]{2,}(?:\s+[A-Z]{2,})*)\b')
+        for hit in hits:
+            text = hit.get("text", "")
+            if defined_term_pattern.search(text):
+                # Fetch Section 1 (usually Definitions) from DocStore
+                def_text = None
+                for k in sec_1_candidates:
+                    def_text = self.docstore.get(k)
+                    if def_text:
+                        break
+                if def_text and not any("DEFINITIONS" in block for block in global_context_blocks):
+                    global_context_blocks.append(f"--- GLOBAL CONTEXT (Definitions) ---\n{def_text}")
+                break  # Only inject once
+        
+        # Prepend global blocks to the main context
+        full_context_blocks = global_context_blocks + full_context_blocks
+
         all_blocks = full_context_blocks + fallback_contexts
         return "\n\n".join(all_blocks)
 
